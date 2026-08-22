@@ -22,10 +22,14 @@ DATA = WORK / "seto-pretrain-data"
 OUTPUT = WORK / "seto-continued-pretrain"
 
 # Training budget. Dataset is larger than one night's budget; resume later if needed.
-MAX_STEPS = 10_000
-SAVE_EVERY = 1_000
-MAX_SAMPLES_RU = 800_000
-MAX_SAMPLES_WIKI = 100_000
+MAX_STEPS = 20_000
+SAVE_EVERY = 500
+# Approximate source mix by document count; actual token mix varies by length.
+MAX_SAMPLES_RU = 400_000
+MAX_SAMPLES_EN = 280_000
+MAX_SAMPLES_UK = 80_000
+MAX_SAMPLES_TECHNICAL = 40_000
+MAX_SAMPLES_WIKI = 0
 
 
 def run(*command, cwd=None):
@@ -137,6 +141,9 @@ run(
     "--tokenizer-dir", TOKENIZER,
     "--skip-tokenizer",
     "--max-samples-ru", MAX_SAMPLES_RU,
+    "--max-samples-en", MAX_SAMPLES_EN,
+    "--max-samples-uk", MAX_SAMPLES_UK,
+    "--max-samples-technical", MAX_SAMPLES_TECHNICAL,
     "--max-samples-wiki", MAX_SAMPLES_WIKI,
     "--shard-size", "100000000",
     cwd=REPO,
@@ -151,8 +158,8 @@ train_command = [
     "--data-dir", DATA / "shards",
     "--tokenizer", TOKENIZER,
     "--output-dir", OUTPUT,
-    "--batch-size", "8",
-    "--grad-accum", "4",
+    "--batch-size", "1",
+    "--grad-accum", "8",
     "--seq-len", "1024",
     "--lr", "1e-4",
     "--warmup-steps", "200",

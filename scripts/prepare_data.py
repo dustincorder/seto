@@ -87,8 +87,14 @@ def main():
     parser.add_argument("--vocab-size", type=int, default=48000)
     parser.add_argument("--max-samples-ru", type=int, default=100000,
                         help="Max Russian samples from FineWeb2")
+    parser.add_argument("--max-samples-en", type=int, default=0,
+                        help="Max English samples from FineWeb2 (0 disables)")
+    parser.add_argument("--max-samples-uk", type=int, default=0,
+                        help="Max Ukrainian samples from FineWeb2 (0 disables)")
     parser.add_argument("--max-samples-wiki", type=int, default=20000,
                         help="Max Wikipedia samples")
+    parser.add_argument("--max-samples-technical", type=int, default=0,
+                        help="Max technical/code samples (0 disables)")
     parser.add_argument("--shard-size", type=int, default=100_000_000,
                         help="Tokens per shard")
     parser.add_argument("--skip-tokenizer", action="store_true")
@@ -101,7 +107,11 @@ def main():
     else:
         tokenizer = SetoTokenizer.from_pretrained(args.tokenizer_dir)
 
-    # FineWeb2 Russian — 85%
+    def next_shard_index():
+        return len(list(Path(shard_dir).glob("train_*.bin")))
+
+    # Sources are appended into one shard sequence. Sample counts are approximate
+    # token weights because document lengths vary by source.
     print("Packing FineWeb2 Russian...")
     fw_shards = pack_from_hf_dataset(
         "HuggingFaceFW/fineweb-2",
@@ -114,19 +124,73 @@ def main():
         shard_start_idx=0,
     )
 
-    # Wikipedia Russian — 15% (start after FineWeb shards)
-    wiki_start = len(list(Path(shard_dir).glob("train_*.bin"))) if Path(shard_dir).exists() else 0
-    print(f"Packing Wikipedia Russian (starting at shard {wiki_start})...")
-    pack_from_hf_dataset(
-        "wikimedia/wikipedia",
-        tokenizer, shard_dir,
-        text_key="text",
-        max_samples=args.max_samples_wiki,
-        shard_size=args.shard_size,
-        split="train",
-        config_name="20231101.ru",
-        shard_start_idx=wiki_start,
-    )
+    if args.max_samples_en:
+        print("Packing FineWeb2 English...")
+        pack_from_hf_dataset(
+            "HuggingFaceFW/fineweb-2",
+            tokenizer, shard_dir,
+            text_key="text",
+            max_samples=args.max_samples_en,
+            shard_size=args.shard_size,
+            split="train",
+            config_name="eng_Latn",
+            shard_start_idx=next_shard_index(),
+        )
+
+    if args.max_samples_uk:
+        print("Packing FineWeb2 Ukrainian...")
+        pack_from_hf_dataset(
+            "HuggingFaceFW/fineweb-2",
+            tokenizer, shard_dir,
+            text_key="text",
+            max_samples=args.max_samples_uk,
+            shard_size=args.shard_size,
+            split="train",
+            config_name="ukr_Cyrl",
+            shard_start_idx=next_shard_index(),
+        )
+
+    if args.max_samples_technical:
+        print("Packing technical/code data...")
+        try:
+            pack_from_hf_dataset(
+                "codeparrot/github-code",
+                tokenizer, shard_dir,
+                text_key="code",
+                max_samples=args.max_samples_technical,
+                shard_size=args.shard_size,
+                split="train",
+                config_name="Python",
+                shard_start_idx=next_shard_index(),
+            )
+        except Exception as error:
+            print(f"Warning: code dataset unavailable: {error}")
+            print("Falling back to FineMath technical text...")
+            pack_from_hf_dataset(
+                "HuggingFaceTB/finemath",
+                tokenizer, shard_dir,
+                text_key="text",
+                max_samples=args.max_samples_technical,
+                shard_size=args.shard_size,
+                split="train",
+                config_name="finemath-3plus",
+                shard_start_idx=next_shard_index(),
+            )
+
+    if args.max_samples_wiki:
+        # Wikipedia adds Russian reference/encyclopedic text after multilingual data.
+        wiki_start = next_shard_index()
+        print(f"Packing Wikipedia Russian (starting at shard {wiki_start})...")
+        pack_from_hf_dataset(
+            "wikimedia/wikipedia",
+            tokenizer, shard_dir,
+            text_key="text",
+            max_samples=args.max_samples_wiki,
+            shard_size=args.shard_size,
+            split="train",
+            config_name="20231101.ru",
+            shard_start_idx=wiki_start,
+        )
 
     print(f"\nDone! Data ready at {shard_dir}")
     print(f"Tokenizer at {args.tokenizer_dir}")
