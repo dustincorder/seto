@@ -107,6 +107,25 @@ with zipfile.ZipFile(INPUT_ZIP) as archive:
     for filename, member in tokenizer_members.items():
         copy_zip_member(archive, member, TOKENIZER / filename)
 
+if not (TOKENIZER / "tokenizer.json").exists():
+    # Some older final_pretrain exports omit tokenizer files from the ZIP.
+    candidates = [
+        path
+        for path in INPUT_ZIP.parent.rglob("tokenizer.json")
+        if "checkpoints" not in path.parts
+    ]
+    if not candidates:
+        raise FileNotFoundError(
+            "Tokenizer missing from final_pretrain.zip and adjacent Kaggle Input"
+        )
+    tokenizer_json = max(candidates, key=lambda path: path.stat().st_mtime)
+    TOKENIZER.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tokenizer_json, TOKENIZER / "tokenizer.json")
+    tokenizer_config = tokenizer_json.with_name("config.json")
+    if tokenizer_config.exists():
+        shutil.copy2(tokenizer_config, TOKENIZER / "config.json")
+    print(f"Tokenizer loaded from Input: {tokenizer_json}", flush=True)
+
 print(f"Base model: {BASE_MODEL}", flush=True)
 print(f"Tokenizer: {TOKENIZER}", flush=True)
 
