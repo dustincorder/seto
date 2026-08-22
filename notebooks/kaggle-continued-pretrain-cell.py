@@ -131,6 +131,7 @@ print(f"Tokenizer: {TOKENIZER}", flush=True)
 # Reuse the old tokenizer; changing vocabulary would invalidate the base weights.
 run(
     sys.executable,
+    "-u",
     "scripts/prepare_data.py",
     "--output-dir", DATA,
     "--tokenizer-dir", TOKENIZER,
