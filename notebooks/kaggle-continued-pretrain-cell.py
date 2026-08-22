@@ -102,16 +102,15 @@ with zipfile.ZipFile(INPUT_ZIP) as archive:
         matches = [name for name in names if name.endswith("/tokenizer/" + filename)]
         if len(matches) == 1:
             tokenizer_members[filename] = matches[0]
-    if "tokenizer.json" not in tokenizer_members:
-        raise FileNotFoundError("Tokenizer is missing from final_pretrain.zip")
     for filename, member in tokenizer_members.items():
         copy_zip_member(archive, member, TOKENIZER / filename)
 
 if not (TOKENIZER / "tokenizer.json").exists():
     # Some older final_pretrain exports omit tokenizer files from the ZIP.
+    input_roots = (INPUT_ZIP.parent, INPUT_ZIP.parent.parent)
     candidates = [
-        path
-        for path in INPUT_ZIP.parent.rglob("tokenizer.json")
+        path for root in input_roots
+        for path in root.rglob("tokenizer.json")
         if "checkpoints" not in path.parts
     ]
     if not candidates:
