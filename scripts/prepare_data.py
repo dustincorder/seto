@@ -125,15 +125,14 @@ def main():
     )
 
     if args.max_samples_en:
-        print("Packing FineWeb2 English...")
+        print("Packing FineWeb English...")
         pack_from_hf_dataset(
-            "HuggingFaceFW/fineweb-2",
+            "HuggingFaceFW/fineweb_100BT",
             tokenizer, shard_dir,
             text_key="text",
             max_samples=args.max_samples_en,
             shard_size=args.shard_size,
             split="train",
-            config_name="eng_Latn",
             shard_start_idx=next_shard_index(),
         )
 
