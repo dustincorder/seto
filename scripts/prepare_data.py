@@ -163,18 +163,9 @@ def main():
                 shard_start_idx=next_shard_index(),
             )
         except Exception as error:
-            print(f"Warning: code dataset unavailable: {error}")
-            print("Falling back to FineMath technical text...")
-            pack_from_hf_dataset(
-                "HuggingFaceTB/finemath",
-                tokenizer, shard_dir,
-                text_key="text",
-                max_samples=args.max_samples_technical,
-                shard_size=args.shard_size,
-                split="train",
-                config_name="finemath-3plus",
-                shard_start_idx=next_shard_index(),
-            )
+            # Streaming code datasets can terminate after writing partial shards.
+            # Keep those shards; do not start another network stream during cleanup.
+            print(f"Warning: technical/code stream stopped; keeping partial data: {error}")
 
     if args.max_samples_wiki:
         # Wikipedia adds Russian reference/encyclopedic text after multilingual data.

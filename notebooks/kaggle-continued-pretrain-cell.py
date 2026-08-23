@@ -20,6 +20,7 @@ BASE_MODEL = WORK / "seto-continued-base"
 TOKENIZER = WORK / "seto-continued-tokenizer"
 DATA = WORK / "seto-pretrain-data"
 OUTPUT = WORK / "seto-continued-pretrain"
+DATA_READY = DATA / ".ready"
 
 # Training budget. Dataset is larger than one night's budget; resume later if needed.
 MAX_STEPS = 20_000
@@ -51,6 +52,8 @@ print(
 
 for path in (REPO, HF_CACHE, BASE_MODEL, TOKENIZER, DATA, OUTPUT):
     if path == OUTPUT:
+        continue
+    if path == DATA and DATA_READY.exists():
         continue
     if path.exists():
         shutil.rmtree(path)
@@ -133,21 +136,25 @@ print(f"Base model: {BASE_MODEL}", flush=True)
 print(f"Tokenizer: {TOKENIZER}", flush=True)
 
 # Reuse the old tokenizer; changing vocabulary would invalidate the base weights.
-run(
-    sys.executable,
-    "-u",
-    "scripts/prepare_data.py",
-    "--output-dir", DATA,
-    "--tokenizer-dir", TOKENIZER,
-    "--skip-tokenizer",
-    "--max-samples-ru", MAX_SAMPLES_RU,
-    "--max-samples-en", MAX_SAMPLES_EN,
-    "--max-samples-uk", MAX_SAMPLES_UK,
-    "--max-samples-technical", MAX_SAMPLES_TECHNICAL,
-    "--max-samples-wiki", MAX_SAMPLES_WIKI,
-    "--shard-size", "100000000",
-    cwd=REPO,
-)
+if DATA_READY.exists():
+    print(f"Reusing prepared data: {DATA}", flush=True)
+else:
+    run(
+        sys.executable,
+        "-u",
+        "scripts/prepare_data.py",
+        "--output-dir", DATA,
+        "--tokenizer-dir", TOKENIZER,
+        "--skip-tokenizer",
+        "--max-samples-ru", MAX_SAMPLES_RU,
+        "--max-samples-en", MAX_SAMPLES_EN,
+        "--max-samples-uk", MAX_SAMPLES_UK,
+        "--max-samples-technical", MAX_SAMPLES_TECHNICAL,
+        "--max-samples-wiki", MAX_SAMPLES_WIKI,
+        "--shard-size", "100000000",
+        cwd=REPO,
+    )
+    DATA_READY.touch()
 
 train_command = [
     "torchrun", "--standalone", "--nproc_per_node=2",
