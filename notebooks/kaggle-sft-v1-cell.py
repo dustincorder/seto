@@ -10,11 +10,7 @@ import zipfile
 from pathlib import Path
 
 
-INPUT_ROOTS = (
-    Path("/kaggle/input/notebooks/alleydick"),
-    Path("/kaggle/input/alleydick"),
-)
-WORK = Path("/kaggle/working")
+WORK = Path("/kaggle/working") if Path("/kaggle").exists() else Path("/content")
 REPO = WORK / "seto"
 HF_CACHE = WORK / "hf-sft-cache"
 SOURCES = WORK / "seto-sft-sources"
@@ -30,20 +26,19 @@ def run(*command, cwd=None):
     subprocess.run([str(part) for part in command], cwd=cwd, check=True)
 
 
-source_candidates = sorted(
-    path
-    for root in INPUT_ROOTS
-    if root.exists()
-    for path in root.glob("*/seto")
-    if (path / "seto-small" / "final_pretrain.zip").is_file()
+candidates = sorted(
+    Path("/kaggle/input").rglob("final_pretrain.zip"),
+    key=lambda p: p.stat().st_mtime,
 )
-if not source_candidates:
-    raise FileNotFoundError(
-        "Missing /kaggle/input/notebooks/alleydick/*/seto/seto-small/final_pretrain.zip"
+if not candidates:
+    candidates = sorted(
+        Path("/kaggle/input").rglob("seto_step_*.zip"),
+        key=lambda p: p.stat().st_mtime,
     )
-source = max(source_candidates, key=lambda path: path.stat().st_mtime)
-pretrain_zip = source / "seto-small" / "final_pretrain.zip"
-print(f"Source: {source}")
+if not candidates:
+    raise FileNotFoundError("Missing final_pretrain.zip or seto_step_*.zip in /kaggle/input")
+pretrain_zip = candidates[-1]
+source = pretrain_zip.parent
 print(f"Pretrain ZIP: {pretrain_zip}")
 
 # Clean only disposable artifacts produced by this cell.
@@ -73,11 +68,13 @@ def ignore_large_artifacts(_directory, names):
     return [name for name in names if name in blocked]
 
 
-shutil.copytree(source, REPO, ignore=ignore_large_artifacts)
 if (REPO / ".git").exists():
     run("git", "pull", "--ff-only", cwd=REPO)
+elif (source / ".git").exists():
+    shutil.copytree(source, REPO, ignore=ignore_large_artifacts)
 else:
-    shutil.rmtree(REPO)
+    if REPO.exists():
+        shutil.rmtree(REPO)
     run("git", "clone", "https://github.com/mosshaven/seto.git", REPO)
 
 run(sys.executable, "-m", "pip", "install", "-q", "tokenizers", "datasets")

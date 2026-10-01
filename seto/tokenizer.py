@@ -144,9 +144,9 @@ class SetoTokenizer:
         parts = []
         for msg in messages:
             role = msg["role"]
-            content = msg["content"]
+            content = msg["content"].strip()
             token = self.special_tokens.get(role, f"<|{role}|>")
-            parts.append(f"{token}\n{content}")
+            parts.append(f"{token}\n{content}\n")
         if add_generation_prompt:
             parts.append(self.special_tokens["assistant"] + "\n")
         text = self.special_tokens["bos"] + "".join(parts)

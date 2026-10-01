@@ -164,8 +164,9 @@ class DPOTrainer:
         positions = torch.arange(T - 1, device=input_ids.device).unsqueeze(0)  # [1, T-1]
         prompt_threshold = prompt_len[:, None].to(input_ids.device) - 1  # [B, 1]
 
-        # Valid tokens: not padding (0) and not EOS (2), within completion region
-        is_valid = (targets != 0) & (targets != 2)
+        # Valid tokens: not padding, within completion region (including EOS to learn stopping)
+        pad_id = self.tokenizer.pad_id if self.tokenizer else 0
+        is_valid = targets != pad_id
         mask = (positions >= prompt_threshold) & is_valid
         token_log_probs = token_log_probs * mask.float()
 

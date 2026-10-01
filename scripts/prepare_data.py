@@ -12,56 +12,88 @@ from seto.tokenizer import SetoTokenizer
 from seto.data import pack_from_hf_dataset
 
 
-def prepare_tokenizer(output_dir: str, vocab_size: int = 48000):
-    """Train tokenizer on multilingual data."""
-    print(f"Training tokenizer (vocab={vocab_size})...")
+def prepare_tokenizer(
+    output_dir: str,
+    vocab_size: int = 48000,
+    samples_ru: int = 50000,
+    samples_en: int = 40000,
+    samples_uk: int = 10000,
+    samples_code: int = 5000,
+):
+    """Train tokenizer on multilingual data (RU/EN/UK/Code)."""
+    print(f"Training tokenizer (vocab={vocab_size}, target samples: RU={samples_ru:,}, EN={samples_en:,}, UK={samples_uk:,}, Code={samples_code:,})...")
 
     from datasets import load_dataset
 
     samples = []
 
-    # Russian from FineWeb2 — 5000 docs
-    print("  Sampling Russian text...")
-    try:
-        ru_ds = load_dataset("HuggingFaceFW/fineweb-2", name="rus_Cyrl", split="train", streaming=True)
-        for i, row in enumerate(ru_ds):
-            if i >= 5000:
-                break
-            text = row.get("text", "")
-            if text and len(text) > 100:
-                samples.append(text)
-    except Exception as e:
-        print(f"  Warning: Could not load FineWeb2 RU: {e}")
+    # Russian from FineWeb2
+    if samples_ru > 0:
+        print(f"  Sampling Russian text ({samples_ru:,} docs)...", flush=True)
+        try:
+            ru_ds = load_dataset("HuggingFaceFW/fineweb-2", name="rus_Cyrl", split="train", streaming=True)
+            for i, row in enumerate(ru_ds):
+                if i >= samples_ru:
+                    break
+                text = row.get("text", "")
+                if text and len(text) > 100:
+                    samples.append(text)
+                if (i + 1) % 10000 == 0:
+                    print(f"    Sampled {i + 1:,} RU docs...", flush=True)
+        except Exception as e:
+            print(f"  Warning: Could not load FineWeb2 RU: {e}")
 
-    # Ukrainian — 500 docs
-    print("  Sampling Ukrainian text...")
-    try:
-        uk_ds = load_dataset("HuggingFaceFW/fineweb-2", name="ukr_Cyrl", split="train", streaming=True)
-        for i, row in enumerate(uk_ds):
-            if i >= 500:
-                break
-            text = row.get("text", "")
-            if text and len(text) > 100:
-                samples.append(text)
-    except Exception as e:
-        print(f"  Warning: Could not load FineWeb2 UK: {e}")
+    # English from FineWeb
+    if samples_en > 0:
+        print(f"  Sampling English text ({samples_en:,} docs)...", flush=True)
+        try:
+            en_ds = load_dataset("HuggingFaceFW/fineweb_100BT", split="train", streaming=True)
+            for i, row in enumerate(en_ds):
+                if i >= samples_en:
+                    break
+                text = row.get("text", "")
+                if text and len(text) > 100:
+                    samples.append(text)
+                if (i + 1) % 10000 == 0:
+                    print(f"    Sampled {i + 1:,} EN docs...", flush=True)
+        except Exception as e:
+            print(f"  Warning: Could not load FineWeb EN: {e}")
 
-    # English — 500 docs
-    print("  Sampling English text...")
-    try:
-        en_ds = load_dataset("HuggingFaceFW/fineweb_100BT", split="train", streaming=True)
-        for i, row in enumerate(en_ds):
-            if i >= 500:
-                break
-            text = row.get("text", "")
-            if text and len(text) > 100:
-                samples.append(text)
-    except Exception as e:
-        print(f"  Warning: Could not load FineWeb EN: {e}")
+    # Ukrainian from FineWeb2
+    if samples_uk > 0:
+        print(f"  Sampling Ukrainian text ({samples_uk:,} docs)...", flush=True)
+        try:
+            uk_ds = load_dataset("HuggingFaceFW/fineweb-2", name="ukr_Cyrl", split="train", streaming=True)
+            for i, row in enumerate(uk_ds):
+                if i >= samples_uk:
+                    break
+                text = row.get("text", "")
+                if text and len(text) > 100:
+                    samples.append(text)
+                if (i + 1) % 5000 == 0:
+                    print(f"    Sampled {i + 1:,} UK docs...", flush=True)
+        except Exception as e:
+            print(f"  Warning: Could not load FineWeb2 UK: {e}")
+
+    # Code / technical
+    if samples_code > 0:
+        print(f"  Sampling Code text ({samples_code:,} docs)...", flush=True)
+        try:
+            code_ds = load_dataset("codeparrot/github-code", name="Python", split="train", streaming=True)
+            for i, row in enumerate(code_ds):
+                if i >= samples_code:
+                    break
+                code = row.get("code", "")
+                if code and len(code) > 50:
+                    samples.append(code)
+        except Exception as e:
+            print(f"  Warning: Could not load code dataset for tokenizer: {e}")
 
     if not samples:
         print("ERROR: No samples collected for tokenizer training")
         return
+
+    print(f"  Total samples collected for tokenizer: {len(samples):,}")
 
     # Write samples to temp file
     temp_file = os.path.join(output_dir, "tokenizer_samples.txt")
@@ -85,15 +117,19 @@ def main():
     parser.add_argument("--output-dir", default="data", help="Output directory")
     parser.add_argument("--tokenizer-dir", default="seto-tokenizer", help="Tokenizer output dir")
     parser.add_argument("--vocab-size", type=int, default=48000)
-    parser.add_argument("--max-samples-ru", type=int, default=100000,
+    parser.add_argument("--tokenizer-samples-ru", type=int, default=50000)
+    parser.add_argument("--tokenizer-samples-en", type=int, default=40000)
+    parser.add_argument("--tokenizer-samples-uk", type=int, default=10000)
+    parser.add_argument("--tokenizer-samples-code", type=int, default=5000)
+    parser.add_argument("--max-samples-ru", type=int, default=500000,
                         help="Max Russian samples from FineWeb2")
-    parser.add_argument("--max-samples-en", type=int, default=0,
+    parser.add_argument("--max-samples-en", type=int, default=450000,
                         help="Max English samples from FineWeb2 (0 disables)")
-    parser.add_argument("--max-samples-uk", type=int, default=0,
+    parser.add_argument("--max-samples-uk", type=int, default=80000,
                         help="Max Ukrainian samples from FineWeb2 (0 disables)")
-    parser.add_argument("--max-samples-wiki", type=int, default=20000,
+    parser.add_argument("--max-samples-wiki", type=int, default=30000,
                         help="Max Wikipedia samples")
-    parser.add_argument("--max-samples-technical", type=int, default=0,
+    parser.add_argument("--max-samples-technical", type=int, default=30000,
                         help="Max technical/code samples (0 disables)")
     parser.add_argument("--shard-size", type=int, default=100_000_000,
                         help="Tokens per shard")
@@ -103,7 +139,14 @@ def main():
     shard_dir = os.path.join(args.output_dir, "shards")
 
     if not args.skip_tokenizer:
-        tokenizer = prepare_tokenizer(args.tokenizer_dir, args.vocab_size)
+        tokenizer = prepare_tokenizer(
+            args.tokenizer_dir,
+            vocab_size=args.vocab_size,
+            samples_ru=args.tokenizer_samples_ru,
+            samples_en=args.tokenizer_samples_en,
+            samples_uk=args.tokenizer_samples_uk,
+            samples_code=args.tokenizer_samples_code,
+        )
     else:
         tokenizer = SetoTokenizer.from_pretrained(args.tokenizer_dir)
 

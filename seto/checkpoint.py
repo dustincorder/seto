@@ -113,6 +113,18 @@ def save_checkpoint(
     return str(zip_path)
 
 
+def _find_zip_entry(zf: zipfile.ZipFile, name: str) -> Optional[str]:
+    names = zf.namelist()
+    if name in names:
+        return name
+    matches = [
+        n for n in names
+        if (n == name or n.endswith("/" + name))
+        and ("/tokenizer/" not in n if name != "tokenizer.json" else True)
+    ]
+    return matches[0] if matches else None
+
+
 def load_checkpoint(
     checkpoint_path: str,
     model: nn.Module,
@@ -127,34 +139,42 @@ def load_checkpoint(
         is_main = (not is_distributed) or torch.distributed.get_rank() == 0
 
         with zipfile.ZipFile(path, "r") as zf:
+            model_entry = _find_zip_entry(zf, "model.pt")
+            if not model_entry:
+                raise FileNotFoundError(f"model.pt not found in zip: {path}")
             # Load model
-            with zf.open("model.pt") as f:
+            with zf.open(model_entry) as f:
                 state_dict = torch.load(f, map_location=device, weights_only=True)
             raw_model = model.module if hasattr(model, "module") else model
             _load_model_state(raw_model, state_dict, allow_vocab_growth)
 
             # Load optimizer
-            if optimizer is not None and "optimizer.pt" in zf.namelist():
-                with zf.open("optimizer.pt") as f:
+            opt_entry = _find_zip_entry(zf, "optimizer.pt")
+            if optimizer is not None and opt_entry:
+                with zf.open(opt_entry) as f:
                     optimizer.load_state_dict(
                         torch.load(f, map_location=device, weights_only=True)
                     )
 
             # Load metadata
             meta = {}
-            if "meta.json" in zf.namelist():
-                meta = json.loads(zf.read("meta.json").decode())
+            meta_entry = _find_zip_entry(zf, "meta.json")
+            if meta_entry:
+                meta = json.loads(zf.read(meta_entry).decode())
 
-            if "scheduler.pt" in zf.namelist():
-                with zf.open("scheduler.pt") as f:
+            sched_entry = _find_zip_entry(zf, "scheduler.pt")
+            if sched_entry:
+                with zf.open(sched_entry) as f:
                     meta["scheduler"] = torch.load(f, map_location=device, weights_only=True)
 
-            if "scaler.pt" in zf.namelist():
-                with zf.open("scaler.pt") as f:
+            scaler_entry = _find_zip_entry(zf, "scaler.pt")
+            if scaler_entry:
+                with zf.open(scaler_entry) as f:
                     meta["scaler"] = torch.load(f, map_location=device, weights_only=True)
 
-            if "rng.pt" in zf.namelist():
-                with zf.open("rng.pt") as f:
+            rng_entry = _find_zip_entry(zf, "rng.pt")
+            if rng_entry:
+                with zf.open(rng_entry) as f:
                     meta["rng"] = torch.load(f, map_location=device, weights_only=False)
 
         return meta
@@ -234,6 +254,6 @@ def zip_checkpoint(ckpt_dir: str, output_path: str) -> str:
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_STORED) as zf:
         for fp in ckpt_dir.rglob("*"):
             if fp.is_file():
-                zf.write(fp, Path(ckpt_dir.name) / fp.relative_to(ckpt_dir))
+                zf.write(fp, fp.relative_to(ckpt_dir))
 
     return str(output_path)
