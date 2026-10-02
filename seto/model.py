@@ -18,8 +18,10 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return (x.float() * norm).type_as(x) * self.weight
+        if hasattr(F, "rms_norm"):
+            return F.rms_norm(x, (x.shape[-1],), self.weight, self.eps)
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps) * self.weight
 
 
 def precompute_freqs_cis(dim: int, max_seq_len: int, theta: float = 10000.0):
@@ -31,9 +33,10 @@ def precompute_freqs_cis(dim: int, max_seq_len: int, theta: float = 10000.0):
 
 def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     # x: [B, heads, T, head_dim]
-    # freqs_cis: [T, head_dim//2] -> [1, 1, T, head_dim//2]
+    # freqs_cis: [1, 1, T, head_dim//2] or [T, head_dim//2]
+    if freqs_cis.dim() == 2:
+        freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(1)
     x_complex = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
-    freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(0)
     x_rot = torch.view_as_real(x_complex * freqs_cis).flatten(-2)
     return x_rot.type_as(x)
 
@@ -77,14 +80,28 @@ class GroupedQueryAttention(nn.Module):
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
-        k = self.repeat_kv(k)
-        v = self.repeat_kv(v)
-
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_dropout.p if self.training else 0.0,
-            is_causal=True,
-        )
+        if self.n_rep > 1:
+            try:
+                attn_output = F.scaled_dot_product_attention(
+                    q, k, v,
+                    dropout_p=self.attn_dropout.p if self.training else 0.0,
+                    is_causal=True,
+                    enable_gqa=True,
+                )
+            except (TypeError, RuntimeError):
+                k = self.repeat_kv(k)
+                v = self.repeat_kv(v)
+                attn_output = F.scaled_dot_product_attention(
+                    q, k, v,
+                    dropout_p=self.attn_dropout.p if self.training else 0.0,
+                    is_causal=True,
+                )
+        else:
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=True,
+            )
 
         out = attn_output.transpose(1, 2).contiguous().view(B, T, -1)
         return self.resid_dropout(self.o_proj(out))
@@ -157,7 +174,7 @@ class SetoLM(nn.Module):
         assert T <= self.config.max_seq_len, f"Sequence length {T} > max {self.config.max_seq_len}"
 
         x = self.dropout(self.tok_embeddings(input_ids))
-        freqs_cis = self.freqs_cis[:T]
+        freqs_cis = self.freqs_cis[:T].unsqueeze(0).unsqueeze(1)
 
         for layer in self.layers:
             if self.config.use_gradient_checkpointing and self.training:

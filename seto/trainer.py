@@ -235,7 +235,7 @@ class SetoTrainer:
                     else:
                         loss.backward()
 
-                running_loss += loss.item()
+                running_loss += loss.detach()
 
                 if (batch_idx + 1) % self.config.grad_accum_steps == 0:
                     if self.config.use_fp16:
@@ -258,7 +258,8 @@ class SetoTrainer:
 
                     if self.is_main and self.global_step % self.config.log_every == 0:
                         elapsed = time.time() - start_time
-                        avg_loss = running_loss / self.config.log_every
+                        loss_scalar = running_loss.item() if isinstance(running_loss, torch.Tensor) else running_loss
+                        avg_loss = loss_scalar / self.config.log_every
                         lr = self.scheduler.get_last_lr()[0]
                         tokens_sec = self.config.tokens_per_step / elapsed * self.config.log_every
                         print(
@@ -288,7 +289,8 @@ class SetoTrainer:
                         if dist.is_initialized():
                             dist.barrier()
                         if self.is_main:
-                            self._save_checkpoint(running_loss / max(1, self.config.log_every))
+                            loss_scalar = running_loss.item() if isinstance(running_loss, torch.Tensor) else running_loss
+                            self._save_checkpoint(loss_scalar / max(1, self.config.log_every))
                         if dist.is_initialized():
                             dist.barrier()
 
@@ -302,7 +304,8 @@ class SetoTrainer:
         if dist.is_initialized():
             dist.barrier()
         if self.is_main and self.global_step % self.config.save_every != 0:
-            self._save_checkpoint(running_loss / max(1, self.config.log_every))
+            loss_scalar = running_loss.item() if isinstance(running_loss, torch.Tensor) else running_loss
+            self._save_checkpoint(loss_scalar / max(1, self.config.log_every))
         if dist.is_initialized():
             dist.barrier()
 
