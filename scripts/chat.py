@@ -40,10 +40,12 @@ def load_model(checkpoint_path: str, device: str = "auto"):
             config_member = _zip_member(names, "config.json", "/tokenizer/")
             config_dict = json.loads(archive.read(config_member).decode("utf-8"))
             model_member = _zip_member(names, "model.pt")
-            with archive.open(model_member) as model_file:
-                state_dict = torch.load(
-                    model_file, map_location="cpu", weights_only=True
-                )
+            import shutil
+            tmp_model = Path("/tmp/seto_chat_load.pt")
+            with archive.open(model_member) as src, open(tmp_model, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            state_dict = torch.load(tmp_model, map_location="cpu")
+            tmp_model.unlink(missing_ok=True)
     else:
         if path.is_dir():
             config_path = path / "config.json"
