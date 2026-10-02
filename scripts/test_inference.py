@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from seto.model import SetoLM
 from seto.config import ModelConfig, MODEL_SMALL
 from seto.tokenizer import SetoTokenizer
+from seto.checkpoint import _safe_torch_load
 
 
 def find_model(model_arg: str | None = None) -> Path:
@@ -94,7 +95,7 @@ def main():
         with zf.open(model_entries[0]) as src, open(tmp_model, "wb") as dst:
             shutil.copyfileobj(src, dst)
 
-        state_dict = torch.load(tmp_model, map_location="cpu", weights_only=False)
+        state_dict = _safe_torch_load(tmp_model, map_location="cpu")
         tmp_model.unlink(missing_ok=True)
 
     if "tok_embeddings.weight" in state_dict:
