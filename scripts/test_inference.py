@@ -174,7 +174,7 @@ def main():
 
             if next_token.item() == tokenizer.eos_id:
                 break
-            x = torch.cat([x, next_token], dim=1)
+            x = torch.cat([x, next_token.view(1, 1)], dim=1)
 
         return tokenizer.decode(x[0].tolist(), skip_special_tokens=True)
 
