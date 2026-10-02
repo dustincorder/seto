@@ -192,6 +192,15 @@ def main():
         train_config.checkpoint_dir = os.path.join(args.output_dir, f"checkpoints_{args.stage}")
         train_config.data_dir = args.data_dir
 
+        # Auto-safety guard: Seto-Small/Base with batch >= 4 on <= 16GB GPU will OOM without gradient checkpointing
+        if torch.cuda.is_available():
+            dev_idx = args.local_rank if args.local_rank >= 0 else 0
+            vram_gb = torch.cuda.get_device_properties(dev_idx).total_memory / (1024**3)
+            if model_config.d_model >= 1280 and vram_gb < 18.0 and train_config.batch_size >= 4 and not model_config.use_gradient_checkpointing:
+                if is_main:
+                    print(f"[train.py] Notice: batch_size={train_config.batch_size} on {vram_gb:.1f}GB GPU requires gradient checkpointing to prevent OOM. Auto-enabling.", flush=True)
+                model_config.use_gradient_checkpointing = True
+
         if is_main:
             os.makedirs(args.output_dir, exist_ok=True)
             print(f"Seto | Stage: {args.stage} | Model: {args.model_config} | Params: ~{model_config.num_params():,}")
