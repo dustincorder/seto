@@ -187,14 +187,16 @@ run(
     "--init-from", BASE_MODEL,
     "--delete-init-from-after-load",
     "--output-dir", OUTPUT,
-    "--batch-size", "1",
-    "--grad-accum", "8",
+    "--batch-size", "4",
+    "--grad-accum", "4",
     "--seq-len", "1024",
     "--lr", "2e-5",
     "--warmup-steps", "100",
     "--max-steps", "3000",
     "--save-every", "500",
     "--log-every", "10",
+    "--fp16",
+    "--no-gradient-checkpointing",
     cwd=REPO,
 )
 

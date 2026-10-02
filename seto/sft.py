@@ -158,9 +158,11 @@ class SFTTrainer:
         start_time = time.time()
         is_ddp = hasattr(self.model, "module") and hasattr(self.model, "no_sync")
 
+        epoch = 0
+
         while self.global_step < self.config.max_steps:
             if self.sampler is not None:
-                self.sampler.set_epoch(self.global_step)
+                self.sampler.set_epoch(epoch)
 
             for batch_idx, batch in enumerate(self.data_loader):
                 if self.global_step >= self.config.max_steps:
@@ -213,6 +215,20 @@ class SFTTrainer:
                             self._save()
                         if torch.distributed.is_initialized():
                             torch.distributed.barrier()
+
+            epoch += 1
+            if self.config.epochs is not None and epoch >= self.config.epochs:
+                if self.is_main:
+                    print(f"[SFTTrainer] Reached epoch limit ({epoch}/{self.config.epochs}). Stopping.", flush=True)
+                break
+
+        # Save final checkpoint if last step wasn't on a save_every boundary
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        if self.is_main and self.global_step % self.config.save_every != 0:
+            self._save()
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
     def _save(self):
         import random

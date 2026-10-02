@@ -67,13 +67,19 @@ class SetoTrainer:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         self.model = model
 
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
+        adam_kwargs = dict(
             lr=self.config.lr,
             betas=(self.config.beta1, self.config.beta2),
             eps=self.config.eps,
             weight_decay=self.config.weight_decay,
         )
+        if self.device.type == 'cuda':
+            try:
+                self.optimizer = torch.optim.AdamW(model.parameters(), fused=True, **adam_kwargs)
+            except Exception:
+                self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
+        else:
+            self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
 
         # FP16 for T4 (Turing) — bf16 not supported on T4
         use_amp = (self.config.use_fp16 or self.config.use_bf16) and self.device.type == "cuda"
@@ -108,6 +114,7 @@ class SetoTrainer:
             pin_memory=True,
             drop_last=True,
             sampler=sampler,
+            persistent_workers=self.config.num_workers > 0,
         )
         self.train_sampler = sampler
 
@@ -166,13 +173,19 @@ class SetoTrainer:
         """Load model weights only (for stage chaining: pretrain→cooldown→sft)."""
         self._load_state(checkpoint_path, load_optimizer=False)
         # Reset optimizer for new stage
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+        adam_kwargs = dict(
             lr=self.config.lr,
             betas=(self.config.beta1, self.config.beta2),
             eps=self.config.eps,
             weight_decay=self.config.weight_decay,
         )
+        if self.device.type == 'cuda':
+            try:
+                self.optimizer = torch.optim.AdamW(self.model.parameters(), fused=True, **adam_kwargs)
+            except Exception:
+                self.optimizer = torch.optim.AdamW(self.model.parameters(), **adam_kwargs)
+        else:
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), **adam_kwargs)
         self.scheduler = get_cosine_schedule(
             self.optimizer, self.config.warmup_steps, self.config.max_steps,
             self.config.min_lr, self.config.lr
@@ -196,10 +209,11 @@ class SetoTrainer:
         running_loss = 0.0
         start_time = time.time()
         is_ddp = hasattr(self.model, "module") and hasattr(self.model, "no_sync")
+        epoch = 0
 
         while self.global_step < self.config.max_steps:
             if self.train_sampler is not None:
-                self.train_sampler.set_epoch(self.global_step)
+                self.train_sampler.set_epoch(epoch)
 
             for batch_idx, batch in enumerate(self.train_loader):
                 if self.global_step >= self.config.max_steps:
@@ -277,6 +291,20 @@ class SetoTrainer:
                             self._save_checkpoint(running_loss / max(1, self.config.log_every))
                         if dist.is_initialized():
                             dist.barrier()
+
+            epoch += 1
+            if self.config.epochs is not None and epoch >= self.config.epochs:
+                if self.is_main:
+                    print(f"[SetoTrainer] Reached epoch limit ({epoch}/{self.config.epochs}). Stopping.", flush=True)
+                break
+
+        # Save final checkpoint if last step wasn't on a save_every boundary
+        if dist.is_initialized():
+            dist.barrier()
+        if self.is_main and self.global_step % self.config.save_every != 0:
+            self._save_checkpoint(running_loss / max(1, self.config.log_every))
+        if dist.is_initialized():
+            dist.barrier()
 
     @torch.no_grad()
     def evaluate(self) -> float:

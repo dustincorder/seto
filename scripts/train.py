@@ -47,7 +47,21 @@ def parse_args():
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
     p.add_argument("--log-every", type=int, default=None)
+    p.add_argument("--epochs", type=int, default=None, help="Stop training after N epochs")
     p.add_argument("--clean", action="store_true", help="Delete old checkpoints before training")
+    p.add_argument(
+        "--gradient-checkpointing",
+        dest="gradient_checkpointing",
+        action="store_true",
+        default=None,
+        help="Enable gradient checkpointing (saves VRAM, slower)",
+    )
+    p.add_argument(
+        "--no-gradient-checkpointing",
+        dest="gradient_checkpointing",
+        action="store_false",
+        help="Disable gradient checkpointing (faster training if VRAM allows)",
+    )
     p.add_argument("--fp16", action="store_true", default=True)
     p.add_argument("--no-fp16", action="store_false", dest="fp16")
     p.add_argument("--dpo-ref-model", default=None)
@@ -76,8 +90,18 @@ def delete_loaded_init(path: str, is_main: bool) -> None:
 def main():
     # Force unbuffered output so torchrun prints immediately
     import io
+    import signal
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, line_buffering=True)
+
+    def _sigterm_handler(signum, frame):
+        print(f"[train.py] Received signal {signum}, initiating graceful save & export...", flush=True)
+        raise KeyboardInterrupt("Received termination signal")
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except Exception:
+        pass
 
     args = parse_args()
 
@@ -87,6 +111,17 @@ def main():
     # Handle torchrun LOCAL_RANK FIRST
     if args.local_rank == -1 and "LOCAL_RANK" in os.environ:
         args.local_rank = int(os.environ["LOCAL_RANK"])
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
+        except Exception:
+            pass
 
     print(f"[train.py] Starting stage={args.stage} model={args.model_config}", flush=True)
     print(f"[train.py] LOCAL_RANK={args.local_rank}", flush=True)
@@ -115,6 +150,8 @@ def main():
 
         if args.seq_len:
             model_config.max_seq_len = args.seq_len
+        if args.gradient_checkpointing is not None:
+            model_config.use_gradient_checkpointing = args.gradient_checkpointing
 
         stage_map = {
             "pretrain": STAGE_PRETRAIN,
@@ -145,6 +182,8 @@ def main():
             train_config.save_every = args.save_every
         if args.log_every:
             train_config.log_every = args.log_every
+        if args.epochs is not None:
+            train_config.epochs = args.epochs
         train_config.use_fp16 = args.fp16
         train_config.local_rank = args.local_rank
         train_config.checkpoint_dir = os.path.join(args.output_dir, f"checkpoints_{args.stage}")
@@ -153,6 +192,7 @@ def main():
         if is_main:
             os.makedirs(args.output_dir, exist_ok=True)
             print(f"Seto | Stage: {args.stage} | Model: {args.model_config} | Params: ~{model_config.num_params():,}")
+            print(f"[train.py] Gradient checkpointing: {model_config.use_gradient_checkpointing}", flush=True)
 
         tokenizer = SetoTokenizer.from_pretrained(args.tokenizer)
         model = SetoLM(model_config)
@@ -209,7 +249,11 @@ def main():
             dev = f"cuda:{local_rank}" if local_rank >= 0 else ("cuda:0" if torch.cuda.is_available() else "cpu")
             print(f"[rank {local_rank}] device={dev}", flush=True)
 
-            trainer.train()
+            try:
+                trainer.train()
+            except KeyboardInterrupt:
+                if is_main:
+                    print("[train.py] Pretraining interrupted by user/signal. Proceeding to save checkpoint/export...", flush=True)
 
         elif args.stage == "sft":
             dataset = SFTDataset(args.data_dir, seq_len=model_config.max_seq_len, tokenizer=tokenizer,
@@ -227,7 +271,11 @@ def main():
                 if latest:
                     trainer.resume(latest)
 
-            trainer.train()
+            try:
+                trainer.train()
+            except KeyboardInterrupt:
+                if is_main:
+                    print("[train.py] SFT interrupted by user/signal. Proceeding to save checkpoint/export...", flush=True)
 
         elif args.stage == "dpo":
             dataset = DPODataset(args.data_dir, seq_len=model_config.max_seq_len, tokenizer=tokenizer,
@@ -252,7 +300,11 @@ def main():
                 if latest:
                     trainer.resume(latest)
 
-            trainer.train()
+            try:
+                trainer.train()
+            except KeyboardInterrupt:
+                if is_main:
+                    print("[train.py] DPO interrupted by user/signal. Proceeding to save checkpoint/export...", flush=True)
 
         if is_main:
             final_dir = os.path.join(args.output_dir, f"final_{args.stage}")

@@ -1,5 +1,6 @@
 """Seto data — uint16 binary shards, SFT dataset, DPO dataset."""
 
+import bisect
 import json
 import os
 from pathlib import Path
@@ -49,26 +50,34 @@ class ShardDataset(Dataset):
         start = idx * self.seq_len
         end = start + self.seq_len + 1
 
-        # Gather tokens across shard boundaries
-        chunk = self._gather(start, end)
+        # Fast path: check if [start, end) is completely within a single shard (99.99% of cases)
+        shard_idx = bisect.bisect_right(self.offsets, start) - 1
+        if 0 <= shard_idx < len(self.shards) and end <= self.offsets[shard_idx + 1]:
+            s = start - self.offsets[shard_idx]
+            e = end - self.offsets[shard_idx]
+            chunk = np.array(self.shards[shard_idx][s:e], copy=False)
+        else:
+            # Boundary case across multiple shards
+            chunk = self._gather(start, end)
+
         if len(chunk) < self.seq_len + 1:
             chunk = np.pad(chunk, (0, self.seq_len + 1 - len(chunk)), constant_values=0)
 
-        input_ids = torch.tensor(chunk[:-1], dtype=torch.long)
-        labels = torch.tensor(chunk[1:], dtype=torch.long)
+        input_ids = torch.from_numpy(chunk[:-1].astype(np.int64))
+        labels = torch.from_numpy(chunk[1:].astype(np.int64))
 
         return {"input_ids": input_ids, "labels": labels}
 
     def _gather(self, start: int, end: int) -> np.ndarray:
-        """Gather tokens from mmap shards without concatenation."""
-        # Find which shards contain [start, end)
+        """Gather tokens from mmap shards across boundary."""
+        first_shard = max(0, bisect.bisect_right(self.offsets, start) - 1)
+        last_shard = min(len(self.shards), bisect.bisect_right(self.offsets, end) + 1)
         parts = []
-        for i in range(len(self.shards)):
+        for i in range(first_shard, last_shard):
             shard_start = self.offsets[i]
             shard_end = self.offsets[i + 1]
             if shard_end <= start or shard_start >= end:
                 continue
-            # Overlap of [start,end) with [shard_start,shard_end)
             s = max(start, shard_start) - shard_start
             e = min(end, shard_end) - shard_start
             parts.append(self.shards[i][s:e])

@@ -71,6 +71,7 @@ class TrainConfig:
     # Schedule
     warmup_steps: int = 2000
     max_steps: int = 100000
+    epochs: Optional[int] = None
     lr_schedule: str = "cosine"
 
     # Batch
