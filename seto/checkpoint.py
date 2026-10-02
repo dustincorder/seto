@@ -126,6 +126,7 @@ def _find_zip_entry(zf: zipfile.ZipFile, name: str) -> Optional[str]:
 
 
 def _safe_torch_load(f, map_location="cpu"):
+    import torch
     try:
         import importlib
         import sys
@@ -133,11 +134,14 @@ def _safe_torch_load(f, map_location="cpu"):
         torch._utils = _u
         sys.modules["torch"]._utils = _u
 
-        import torch._C
-        for attr in ["dtype", "device", "layout", "finfo"]:
-            if hasattr(torch._C, attr) and not hasattr(torch, attr):
-                setattr(torch, attr, getattr(torch._C, attr))
-                setattr(sys.modules["torch"], attr, getattr(torch._C, attr))
+        try:
+            _c = importlib.import_module("torch._C")
+            for attr in ["dtype", "device", "layout", "finfo"]:
+                if hasattr(_c, attr) and not hasattr(torch, attr):
+                    setattr(torch, attr, getattr(_c, attr))
+                    setattr(sys.modules["torch"], attr, getattr(_c, attr))
+        except Exception:
+            pass
 
         def _safe_element_size(dtype):
             s = str(dtype).lower()
@@ -156,6 +160,7 @@ def _safe_torch_load(f, map_location="cpu"):
         _u._element_size = _safe_element_size
     except Exception:
         pass
+
     try:
         return torch.load(f, map_location=map_location, weights_only=False)
     except Exception:
