@@ -184,19 +184,26 @@ def load_checkpoint(
             model_entry = _find_zip_entry(zf, "model.pt")
             if not model_entry:
                 raise FileNotFoundError(f"model.pt not found in zip: {path}")
-            # Load model
-            with zf.open(model_entry) as f:
-                state_dict = _safe_torch_load(f, map_location=device)
+            # Load model safely via tmp file to bypass Python 3.12 stream unpickler bug
+            model_tmp = Path("/tmp/seto_ckpt_model_load.pt")
+            with zf.open(model_entry) as src, open(model_tmp, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            state_dict = _safe_torch_load(model_tmp, map_location=device)
+            model_tmp.unlink(missing_ok=True)
+
             raw_model = model.module if hasattr(model, "module") else model
             _load_model_state(raw_model, state_dict, allow_vocab_growth)
 
             # Load optimizer
             opt_entry = _find_zip_entry(zf, "optimizer.pt")
             if optimizer is not None and opt_entry:
-                with zf.open(opt_entry) as f:
-                    optimizer.load_state_dict(
-                        _safe_torch_load(f, map_location=device)
-                    )
+                opt_tmp = Path("/tmp/seto_ckpt_opt_load.pt")
+                with zf.open(opt_entry) as src, open(opt_tmp, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                optimizer.load_state_dict(
+                    _safe_torch_load(opt_tmp, map_location=device)
+                )
+                opt_tmp.unlink(missing_ok=True)
 
             # Load metadata
             meta = {}
@@ -221,29 +228,31 @@ def load_checkpoint(
 
         return meta
 
-    # Legacy: plain directory
-    state_dict = _safe_torch_load(path / "model.pt", map_location=device)
+    # Legacy: plain directory or direct model file path
+    model_file = path if path.is_file() else (path / "model.pt")
+    state_dict = _safe_torch_load(model_file, map_location=device)
     raw_model = model.module if hasattr(model, "module") else model
     _load_model_state(raw_model, state_dict, allow_vocab_growth)
 
-    if optimizer is not None and (path / "optimizer.pt").exists():
+    ckpt_dir = path if path.is_dir() else path.parent
+    if optimizer is not None and (ckpt_dir / "optimizer.pt").exists():
         optimizer.load_state_dict(
-            _safe_torch_load(path / "optimizer.pt", map_location=device)
+            _safe_torch_load(ckpt_dir / "optimizer.pt", map_location=device)
         )
 
     meta = {}
-    if (path / "meta.json").exists():
-        with open(path / "meta.json") as f:
+    if (ckpt_dir / "meta.json").exists():
+        with open(ckpt_dir / "meta.json") as f:
             meta = json.load(f)
 
-    if (path / "scheduler.pt").exists():
-        meta["scheduler"] = _safe_torch_load(path / "scheduler.pt", map_location=device)
+    if (ckpt_dir / "scheduler.pt").exists():
+        meta["scheduler"] = _safe_torch_load(ckpt_dir / "scheduler.pt", map_location=device)
 
-    if (path / "scaler.pt").exists():
-        meta["scaler"] = _safe_torch_load(path / "scaler.pt", map_location=device)
+    if (ckpt_dir / "scaler.pt").exists():
+        meta["scaler"] = _safe_torch_load(ckpt_dir / "scaler.pt", map_location=device)
 
-    if (path / "rng.pt").exists():
-        meta["rng"] = _safe_torch_load(path / "rng.pt", map_location=device)
+    if (ckpt_dir / "rng.pt").exists():
+        meta["rng"] = _safe_torch_load(ckpt_dir / "rng.pt", map_location=device)
 
     return meta
 

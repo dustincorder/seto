@@ -106,30 +106,19 @@ class SFTTrainer:
 
     def init_from(self, checkpoint_path: str):
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        if self.is_main:
+            print(f"Loading init weights from {checkpoint_path}", flush=True)
+        load_checkpoint(
+            checkpoint_path,
+            raw_model,
+            None,
+            str(self.device),
+            allow_vocab_growth=True,
+        )
         if torch.distributed.is_initialized():
-            rank = torch.distributed.get_rank()
-            if rank == 0:
-                print(f"[rank 0] Loading init weights from {checkpoint_path}", flush=True)
-                load_checkpoint(
-                    checkpoint_path,
-                    raw_model,
-                    None,
-                    str(self.device),
-                    allow_vocab_growth=True,
-                )
-            else:
-                print(f"[rank {rank}] Waiting for weights from rank 0", flush=True)
-            for parameter in raw_model.parameters():
-                torch.distributed.broadcast(parameter.data, src=0)
-            print(f"[rank {rank}] Init weights synchronized", flush=True)
-        else:
-            load_checkpoint(
-                checkpoint_path,
-                raw_model,
-                None,
-                str(self.device),
-                allow_vocab_growth=True,
-            )
+            torch.distributed.barrier()
+            if self.is_main:
+                print("Init weights loaded and synchronized across all ranks", flush=True)
         # Reset optimizer + scheduler for new stage
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),

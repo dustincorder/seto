@@ -20,6 +20,7 @@ from .config import ModelConfig, TrainConfig
 def setup_distributed(local_rank: int):
     if local_rank == -1:
         return
+    os.environ.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")
     # torchrun already sets MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE
     # Only call init_process_group if torchrun didn't already do it
     if not dist.is_initialized():
