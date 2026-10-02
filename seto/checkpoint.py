@@ -12,17 +12,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-try:
-    import torch._utils
-except Exception:
-    pass
-
-
-def _safe_torch_load(f, map_location="cpu"):
-    try:
-        return torch.load(f, map_location=map_location, weights_only=False)
-    except TypeError:
-        return torch.load(f, map_location=map_location)
 
 
 VOCAB_WEIGHT_KEYS = {"tok_embeddings.weight", "output.weight"}
@@ -134,6 +123,17 @@ def _find_zip_entry(zf: zipfile.ZipFile, name: str) -> Optional[str]:
         and ("/tokenizer/" not in n if name != "tokenizer.json" else True)
     ]
     return matches[0] if matches else None
+
+
+def _safe_torch_load(f, map_location="cpu"):
+    try:
+        import torch._utils  # Required for PyTorch unpickler
+    except Exception:
+        pass
+    try:
+        return torch.load(f, map_location=map_location, weights_only=False)
+    except Exception:
+        return torch.load(f, map_location=map_location)
 
 
 def load_checkpoint(
