@@ -132,6 +132,28 @@ def _safe_torch_load(f, map_location="cpu"):
         _u = importlib.import_module("torch._utils")
         torch._utils = _u
         sys.modules["torch"]._utils = _u
+
+        import torch._C
+        for attr in ["dtype", "device", "layout", "finfo"]:
+            if hasattr(torch._C, attr) and not hasattr(torch, attr):
+                setattr(torch, attr, getattr(torch._C, attr))
+                setattr(sys.modules["torch"], attr, getattr(torch._C, attr))
+
+        def _safe_element_size(dtype):
+            s = str(dtype).lower()
+            if "int64" in s or "long" in s or "float64" in s or "double" in s:
+                return 8
+            elif "float32" in s or "int32" in s or (("float" in s or "int" in s) and "16" not in s and "8" not in s and "64" not in s):
+                return 4
+            elif "float16" in s or "half" in s or "bfloat16" in s or "int16" in s or "short" in s:
+                return 2
+            elif "int8" in s or "uint8" in s or "bool" in s or "byte" in s:
+                return 1
+            if hasattr(dtype, "itemsize"):
+                return dtype.itemsize
+            return 4
+
+        _u._element_size = _safe_element_size
     except Exception:
         pass
     try:
