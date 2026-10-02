@@ -196,7 +196,7 @@ run(
     "--save-every", "500",
     "--log-every", "10",
     "--fp16",
-    "--no-gradient-checkpointing",
+    "--gradient-checkpointing",
     cwd=REPO,
 )
 

@@ -103,6 +103,9 @@ def main():
     except Exception:
         pass
 
+    if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
     args = parse_args()
 
     if args.dataset:
