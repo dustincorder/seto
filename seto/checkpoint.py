@@ -12,6 +12,17 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+try:
+    import torch._utils
+except Exception:
+    pass
+
+
+def _safe_torch_load(f, map_location="cpu"):
+    try:
+        return torch.load(f, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(f, map_location=map_location)
 
 
 VOCAB_WEIGHT_KEYS = {"tok_embeddings.weight", "output.weight"}
@@ -144,7 +155,7 @@ def load_checkpoint(
                 raise FileNotFoundError(f"model.pt not found in zip: {path}")
             # Load model
             with zf.open(model_entry) as f:
-                state_dict = torch.load(f, map_location=device, weights_only=True)
+                state_dict = _safe_torch_load(f, map_location=device)
             raw_model = model.module if hasattr(model, "module") else model
             _load_model_state(raw_model, state_dict, allow_vocab_growth)
 
@@ -153,7 +164,7 @@ def load_checkpoint(
             if optimizer is not None and opt_entry:
                 with zf.open(opt_entry) as f:
                     optimizer.load_state_dict(
-                        torch.load(f, map_location=device, weights_only=True)
+                        _safe_torch_load(f, map_location=device)
                     )
 
             # Load metadata
@@ -165,28 +176,28 @@ def load_checkpoint(
             sched_entry = _find_zip_entry(zf, "scheduler.pt")
             if sched_entry:
                 with zf.open(sched_entry) as f:
-                    meta["scheduler"] = torch.load(f, map_location=device, weights_only=True)
+                    meta["scheduler"] = _safe_torch_load(f, map_location=device)
 
             scaler_entry = _find_zip_entry(zf, "scaler.pt")
             if scaler_entry:
                 with zf.open(scaler_entry) as f:
-                    meta["scaler"] = torch.load(f, map_location=device, weights_only=True)
+                    meta["scaler"] = _safe_torch_load(f, map_location=device)
 
             rng_entry = _find_zip_entry(zf, "rng.pt")
             if rng_entry:
                 with zf.open(rng_entry) as f:
-                    meta["rng"] = torch.load(f, map_location=device, weights_only=False)
+                    meta["rng"] = _safe_torch_load(f, map_location=device)
 
         return meta
 
     # Legacy: plain directory
-    state_dict = torch.load(path / "model.pt", map_location=device, weights_only=True)
+    state_dict = _safe_torch_load(path / "model.pt", map_location=device)
     raw_model = model.module if hasattr(model, "module") else model
     _load_model_state(raw_model, state_dict, allow_vocab_growth)
 
     if optimizer is not None and (path / "optimizer.pt").exists():
         optimizer.load_state_dict(
-            torch.load(path / "optimizer.pt", map_location=device, weights_only=True)
+            _safe_torch_load(path / "optimizer.pt", map_location=device)
         )
 
     meta = {}
@@ -195,13 +206,13 @@ def load_checkpoint(
             meta = json.load(f)
 
     if (path / "scheduler.pt").exists():
-        meta["scheduler"] = torch.load(path / "scheduler.pt", map_location=device, weights_only=True)
+        meta["scheduler"] = _safe_torch_load(path / "scheduler.pt", map_location=device)
 
     if (path / "scaler.pt").exists():
-        meta["scaler"] = torch.load(path / "scaler.pt", map_location=device, weights_only=True)
+        meta["scaler"] = _safe_torch_load(path / "scaler.pt", map_location=device)
 
     if (path / "rng.pt").exists():
-        meta["rng"] = torch.load(path / "rng.pt", map_location=device, weights_only=False)
+        meta["rng"] = _safe_torch_load(path / "rng.pt", map_location=device)
 
     return meta
 
