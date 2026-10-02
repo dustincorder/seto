@@ -127,7 +127,11 @@ def _find_zip_entry(zf: zipfile.ZipFile, name: str) -> Optional[str]:
 
 def _safe_torch_load(f, map_location="cpu"):
     try:
-        import torch._utils  # Required for PyTorch unpickler
+        import importlib
+        import sys
+        _u = importlib.import_module("torch._utils")
+        torch._utils = _u
+        sys.modules["torch"]._utils = _u
     except Exception:
         pass
     try:
