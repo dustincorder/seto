@@ -126,6 +126,7 @@ def generate(
     temperature: float = 0.7,
     top_k: int = 50,
     top_p: float = 0.9,
+    repetition_penalty: float = 1.15,
     device: str = "cpu",
 ):
     text = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
@@ -135,23 +136,35 @@ def generate(
     for _ in range(max_new_tokens):
         model_input = input_ids[:, -model.config.max_seq_len:]
         logits, _ = model(model_input)
-        logits = logits[:, -1, :] / temperature
+        logits = logits[:, -1, :]
 
-        if top_k > 0:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = float("-inf")
+        if repetition_penalty != 1.0 and generated_ids:
+            for token_id in set(generated_ids):
+                if logits[0, token_id] > 0:
+                    logits[0, token_id] /= repetition_penalty
+                else:
+                    logits[0, token_id] *= repetition_penalty
 
-        if top_p < 1.0:
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            sorted_indices_to_remove = cumulative_probs > top_p
-            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = 0
-            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-            logits[indices_to_remove] = float("-inf")
+        if temperature > 0:
+            logits = logits / temperature
 
-        probs = torch.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
+            if top_k > 0:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+
+            if top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = float("-inf")
+
+            probs = torch.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+        else:
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
 
         if next_token.item() == tokenizer.eos_id:
             break
@@ -163,7 +176,17 @@ def generate(
 
 
 @torch.inference_mode()
-def chat(model, tokenizer, device, system_prompt=None):
+def chat(
+    model,
+    tokenizer,
+    device,
+    system_prompt=None,
+    temperature: float = 0.7,
+    top_k: int = 50,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.15,
+    max_new_tokens: int = 500,
+):
     print("Seto Chat (type 'quit' to exit, 'clear' to reset)")
     print("-" * 50)
 
@@ -198,20 +221,38 @@ def chat(model, tokenizer, device, system_prompt=None):
         print("\nSeto: ", end="", flush=True)
 
         response_tokens = []
-        for _ in range(500):
-            logits, _ = model(input_ids)
-            logits = logits[:, -1, :] / 0.7
+        for _ in range(max_new_tokens):
+            model_input = input_ids[:, -model.config.max_seq_len:]
+            logits, _ = model(model_input)
+            logits = logits[:, -1, :]
 
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            sorted_indices_to_remove = cumulative_probs > 0.9
-            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = 0
-            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-            logits[indices_to_remove] = float("-inf")
+            if repetition_penalty != 1.0 and response_tokens:
+                for token_id in set(response_tokens):
+                    if logits[0, token_id] > 0:
+                        logits[0, token_id] /= repetition_penalty
+                    else:
+                        logits[0, token_id] *= repetition_penalty
 
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
+            if temperature > 0:
+                logits = logits / temperature
+
+                if top_k > 0:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = float("-inf")
+
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                    logits[indices_to_remove] = float("-inf")
+
+                probs = torch.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = torch.argmax(logits, dim=-1, keepdim=True)
 
             if next_token.item() == tokenizer.eos_id:
                 break
@@ -247,6 +288,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=0.9)
+    parser.add_argument("--repetition-penalty", type=float, default=1.15)
     args = parser.parse_args()
 
     device = args.device
@@ -275,11 +317,22 @@ def main():
                 temperature=args.temperature,
                 top_k=args.top_k,
                 top_p=args.top_p,
+                repetition_penalty=args.repetition_penalty,
                 device=device,
             )
         )
     else:
-        chat(model, tokenizer, device, args.system_prompt)
+        chat(
+            model,
+            tokenizer,
+            device,
+            system_prompt=args.system_prompt,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            repetition_penalty=args.repetition_penalty,
+            max_new_tokens=args.max_new_tokens,
+        )
 
 
 if __name__ == "__main__":
