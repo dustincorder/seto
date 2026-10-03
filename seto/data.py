@@ -378,11 +378,12 @@ def pack_from_hf_dataset(
     split: str = "train",
     config_name: Optional[str] = None,
     shard_start_idx: int = 0,
+    **kwargs,
 ):
     """Load HuggingFace dataset, tokenize, and pack into shards. Incremental."""
     from datasets import load_dataset
 
-    ds = load_dataset(dataset_name, name=config_name, split=split, streaming=True)
+    ds = load_dataset(dataset_name, name=config_name, split=split, streaming=True, **kwargs)
 
     os.makedirs(output_dir, exist_ok=True)
     buffer = []

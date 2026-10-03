@@ -43,6 +43,7 @@ def parse_args():
     p.add_argument("--grad-accum", type=int, default=None)
     p.add_argument("--seq-len", type=int, default=None, help="Override model max_seq_len")
     p.add_argument("--lr", type=float, default=None)
+    p.add_argument("--min-lr", type=float, default=None)
     p.add_argument("--warmup-steps", type=int, default=None)
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
@@ -182,6 +183,8 @@ def main():
             train_config.grad_accum_steps = args.grad_accum
         if args.lr:
             train_config.lr = args.lr
+        if args.min_lr:
+            train_config.min_lr = args.min_lr
         if args.warmup_steps:
             train_config.warmup_steps = args.warmup_steps
         if args.max_steps:

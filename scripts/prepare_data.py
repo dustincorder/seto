@@ -79,11 +79,11 @@ def prepare_tokenizer(
     if samples_code > 0:
         print(f"  Sampling Code text ({samples_code:,} docs)...", flush=True)
         try:
-            code_ds = load_dataset("codeparrot/github-code", name="Python", split="train", streaming=True)
+            code_ds = load_dataset("bigcode/the-stack-smol-xl", data_dir="data/python", split="train", streaming=True)
             for i, row in enumerate(code_ds):
                 if i >= samples_code:
                     break
-                code = row.get("code", "")
+                code = row.get("content", "")
                 if code and len(code) > 50:
                     samples.append(code)
         except Exception as e:
@@ -196,13 +196,13 @@ def main():
         print("Packing technical/code data...")
         try:
             pack_from_hf_dataset(
-                "codeparrot/github-code",
+                "bigcode/the-stack-smol-xl",
                 tokenizer, shard_dir,
-                text_key="code",
+                text_key="content",
                 max_samples=args.max_samples_technical,
                 shard_size=args.shard_size,
                 split="train",
-                config_name="Python",
+                data_dir="data/python",
                 shard_start_idx=next_shard_index(),
             )
         except Exception as error:

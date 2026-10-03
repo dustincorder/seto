@@ -42,10 +42,20 @@ sys.path.insert(0, str(REPO))
 # 2. Dependencies
 run(sys.executable, "-m", "pip", "install", "-q", "tokenizers", "datasets", "huggingface_hub")
 
-# 3. Prepare High-Density Data for 1.1B
-# Focused on: Russian language, facts, everyday logic, English fluency
+# 3. Check if shards and tokenizer already exist (e.g. from previous run attached as Input)
+input_shards = sorted(Path("/kaggle/input").rglob("train_0000.bin"))
+if input_shards:
+    SHARDS_DIR = input_shards[0].parent
+    print(f"⚡ Найдена готовая папка с шардами в инпутах: {SHARDS_DIR}")
+    tok_candidates = [p.parent for p in Path("/kaggle/input").rglob("tokenizer.json") if "checkpoints" not in p.parts]
+    if tok_candidates:
+        TOKENIZER_DIR = tok_candidates[0]
+        print(f"⚡ Найден готовый токенизатор в инпутах: {TOKENIZER_DIR}")
+    DATA_READY = DATA_DIR / ".ready"
+    DATA_READY.touch()
+
 DATA_READY = DATA_DIR / ".ready"
-if not DATA_READY.exists():
+if not DATA_READY.exists() and not list(SHARDS_DIR.glob("train_*.bin")):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     print("📦 Подготовка обучающих данных и токенизатора (с токенами <think>)...")
     run(
