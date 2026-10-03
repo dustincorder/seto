@@ -75,10 +75,21 @@ class SetoTrainer:
             weight_decay=self.config.weight_decay,
         )
         if self.device.type == 'cuda':
+            optimizer_created = False
             try:
-                self.optimizer = torch.optim.AdamW(model.parameters(), fused=True, **adam_kwargs)
-            except Exception:
-                self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
+                import bitsandbytes as bnb
+                self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
+                optimizer_created = True
+                if self.is_main:
+                    print("[trainer.py] Optimizer: 8-bit AdamW (bitsandbytes) — saving ~6 GB VRAM", flush=True)
+            except Exception as e:
+                pass
+
+            if not optimizer_created:
+                try:
+                    self.optimizer = torch.optim.AdamW(model.parameters(), fused=True, **adam_kwargs)
+                except Exception:
+                    self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
         else:
             self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
 

@@ -39,13 +39,20 @@ class SFTTrainer:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         self.model = model
 
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
+        adam_kwargs = dict(
             lr=config.lr,
             betas=(config.beta1, config.beta2),
             eps=config.eps,
             weight_decay=config.weight_decay,
         )
+        if self.device.type == 'cuda':
+            try:
+                import bitsandbytes as bnb
+                self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
+            except Exception:
+                self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
+        else:
+            self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
 
         self.use_amp = (config.use_fp16 or config.use_bf16) and self.device.type == "cuda"
         self.amp_dtype = torch.bfloat16 if config.use_bf16 else torch.float16

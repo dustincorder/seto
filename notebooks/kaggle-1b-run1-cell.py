@@ -40,7 +40,7 @@ else:
 sys.path.insert(0, str(REPO))
 
 # 2. Dependencies
-run(sys.executable, "-m", "pip", "install", "-q", "tokenizers", "datasets", "huggingface_hub")
+run(sys.executable, "-m", "pip", "install", "-q", "tokenizers", "datasets", "huggingface_hub", "bitsandbytes")
 
 # 3. Check if shards and tokenizer already exist (e.g. from previous run attached as Input)
 input_shards = sorted(Path("/kaggle/input").rglob("train_0000.bin"))
@@ -103,8 +103,8 @@ run(
     "--data-dir", SHARDS_DIR,
     "--tokenizer", TOKENIZER_DIR,
     "--output-dir", OUTPUT_DIR,
-    "--batch-size", "2",
-    "--grad-accum", "8",
+    "--batch-size", "1",
+    "--grad-accum", "16",
     "--seq-len", "1024",
     "--lr", "3e-4",
     "--min-lr", "3e-5",
