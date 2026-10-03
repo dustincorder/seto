@@ -17,6 +17,8 @@ SPECIAL_TOKENS = {
     "assistant": "<|assistant|>",
     "tool_call": "<|tool_call|>",
     "tool_result": "<|tool_result|>",
+    "think_start": "<think>",
+    "think_end": "</think>",
 }
 
 
@@ -121,6 +123,14 @@ class SetoTokenizer:
     @property
     def tool_result_id(self) -> int:
         return self._tokenizer.token_to_id(self.special_tokens["tool_result"])
+
+    @property
+    def think_start_id(self) -> int:
+        return self._tokenizer.token_to_id(self.special_tokens["think_start"])
+
+    @property
+    def think_end_id(self) -> int:
+        return self._tokenizer.token_to_id(self.special_tokens["think_end"])
 
     def add_special_tokens(self, tokens: List[str]) -> int:
         """Add new special tokens to existing tokenizer. Returns number added."""

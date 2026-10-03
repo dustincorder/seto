@@ -53,6 +53,7 @@ MODEL_BASE = ModelConfig(
     d_model=2048, n_layers=22, n_heads=16, n_kv_heads=4,
     d_ff=5504, max_seq_len=2048,
 )
+MODEL_1B = MODEL_BASE
 
 
 @dataclass

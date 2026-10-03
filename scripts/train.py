@@ -29,7 +29,7 @@ from seto.checkpoint import zip_checkpoint
 def parse_args():
     p = argparse.ArgumentParser(description="Train Seto")
     p.add_argument("--stage", required=True, choices=["pretrain", "cooldown", "sft", "dpo"])
-    p.add_argument("--model-config", default="tiny", choices=["tiny", "small", "base"])
+    p.add_argument("--model-config", default="tiny", choices=["tiny", "small", "base", "1b"])
     p.add_argument("--model-config-file", help="Exact ModelConfig JSON from a checkpoint")
     data = p.add_mutually_exclusive_group(required=True)
     data.add_argument("--data-dir", help="Directory with .bin shards or SFT/DPO data")
@@ -144,7 +144,12 @@ def main():
             dist.barrier()
 
     try:
-        model_map = {"tiny": MODEL_TINY, "small": MODEL_SMALL, "base": MODEL_BASE}
+        model_map = {
+            "tiny": MODEL_TINY,
+            "small": MODEL_SMALL,
+            "base": MODEL_BASE,
+            "1b": MODEL_BASE,
+        }
         if args.model_config_file:
             with open(args.model_config_file) as f:
                 model_config = ModelConfig(**json.load(f))

@@ -282,7 +282,8 @@ def main():
         help="Tokenizer directory override (auto-loaded from packaged model)",
     )
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--system-prompt", default="Ты Seto — полезный русскоязычный ассистент.")
+    from seto.persona import SETO_SYSTEM_PROMPT
+    parser.add_argument("--system-prompt", default=SETO_SYSTEM_PROMPT)
     parser.add_argument("--prompt", help="Single prompt for notebook/non-interactive use")
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.7)
