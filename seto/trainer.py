@@ -121,6 +121,14 @@ class SetoTrainer:
         self.tokens_seen = 0
         self.best_val_loss = float("inf")
 
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+            alloc_gb = torch.cuda.memory_allocated(self.device) / (1024**3)
+            res_gb = torch.cuda.memory_reserved(self.device) / (1024**3)
+            total_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024**3)
+            free_gb = total_gb - alloc_gb
+            print(f"[rank {self.local_rank}] Device: {self.device} | VRAM allocated: {alloc_gb:.2f} GB | Reserved: {res_gb:.2f} GB | Free: {free_gb:.2f} GB / {total_gb:.2f} GB", flush=True)
+
         self._setup_dataloader()
 
     def _setup_dataloader(self):
@@ -278,6 +286,12 @@ class SetoTrainer:
                     self.scheduler.step()
                     self.global_step += 1
                     self.tokens_seen += self.config.tokens_per_step
+
+                    if self.is_main and self.global_step == 1 and self.device.type == "cuda":
+                        alloc_gb = torch.cuda.memory_allocated(self.device) / (1024**3)
+                        total_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024**3)
+                        free_gb = total_gb - alloc_gb
+                        print(f"⚡ [rank {self.local_rank}] Step 1 SUCCESS! Active VRAM: {alloc_gb:.2f} GB / {total_gb:.2f} GB ({free_gb:.2f} GB free headroom)", flush=True)
 
                     if self.is_main and self.global_step % self.config.log_every == 0:
                         elapsed = time.time() - start_time
