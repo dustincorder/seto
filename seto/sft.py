@@ -36,7 +36,13 @@ class SFTTrainer:
         model = model.to(self.device)
         if local_rank >= 0:
             from torch.nn.parallel import DistributedDataParallel as DDP
-            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+            model = DDP(
+                model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                gradient_as_bucket_view=True,
+                bucket_cap_mb=25,
+            )
         self.model = model
 
         adam_kwargs = dict(
@@ -48,7 +54,10 @@ class SFTTrainer:
         if self.device.type == 'cuda':
             try:
                 import bitsandbytes as bnb
-                self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
+                if hasattr(bnb.optim, "PagedAdamW8bit"):
+                    self.optimizer = bnb.optim.PagedAdamW8bit(model.parameters(), **adam_kwargs)
+                else:
+                    self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
             except Exception:
                 self.optimizer = torch.optim.AdamW(model.parameters(), **adam_kwargs)
         else:
@@ -171,12 +180,8 @@ class SFTTrainer:
                 ctx = nullcontext() if (not is_ddp or sync_now) else self.model.no_sync()
                 with ctx:
                     with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
-                        logits, _ = self.model(input_ids)
-                        loss = F.cross_entropy(
-                            logits.view(-1, logits.size(-1)),
-                            labels.view(-1),
-                            ignore_index=-100,
-                        ) / self.config.grad_accum_steps
+                        _, loss = self.model(input_ids, targets=labels)
+                        loss = loss / self.config.grad_accum_steps
                     if self.config.use_fp16:
                         self.scaler.scale(loss).backward()
                     else:

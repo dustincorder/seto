@@ -9,6 +9,9 @@ import shutil
 import sys
 from pathlib import Path
 
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 import torch.distributed as dist
 

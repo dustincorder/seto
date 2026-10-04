@@ -65,7 +65,13 @@ class SetoTrainer:
         model = model.to(self.device)
 
         if local_rank >= 0:
-            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+            model = DDP(
+                model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                gradient_as_bucket_view=True,
+                bucket_cap_mb=25,
+            )
         self.model = model
 
         adam_kwargs = dict(
@@ -78,10 +84,15 @@ class SetoTrainer:
             optimizer_created = False
             try:
                 import bitsandbytes as bnb
-                self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
+                if hasattr(bnb.optim, "PagedAdamW8bit"):
+                    self.optimizer = bnb.optim.PagedAdamW8bit(model.parameters(), **adam_kwargs)
+                    if self.is_main:
+                        print("[trainer.py] Optimizer: Paged 8-bit AdamW (bitsandbytes) — saving ~6 GB VRAM with CPU paging", flush=True)
+                else:
+                    self.optimizer = bnb.optim.AdamW8bit(model.parameters(), **adam_kwargs)
+                    if self.is_main:
+                        print("[trainer.py] Optimizer: 8-bit AdamW (bitsandbytes) — saving ~6 GB VRAM", flush=True)
                 optimizer_created = True
-                if self.is_main:
-                    print("[trainer.py] Optimizer: 8-bit AdamW (bitsandbytes) — saving ~6 GB VRAM", flush=True)
             except Exception as e:
                 pass
 

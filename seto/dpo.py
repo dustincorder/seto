@@ -43,7 +43,13 @@ class DPOTrainer:
 
         if local_rank >= 0:
             from torch.nn.parallel import DistributedDataParallel as DDP
-            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+            model = DDP(
+                model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                gradient_as_bucket_view=True,
+                bucket_cap_mb=25,
+            )
 
         self.model = model
         self.ref_model = ref_model

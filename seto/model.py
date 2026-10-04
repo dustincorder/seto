@@ -169,7 +169,8 @@ class SetoLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         targets: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return_logits: bool = False,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         B, T = input_ids.shape
         assert T <= self.config.max_seq_len, f"Sequence length {T} > max {self.config.max_seq_len}"
 
@@ -183,17 +184,49 @@ class SetoLM(nn.Module):
                 x = layer(x, freqs_cis)
 
         x = self.norm(x)
-        logits = self.output(x)
 
-        loss = None
-        if targets is not None:
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
+        if targets is None or return_logits:
+            logits = self.output(x)
+            loss = None
+            if targets is not None:
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    targets.view(-1),
+                    ignore_index=-100,
+                )
+            return logits, loss
+
+        # Chunked cross-entropy during training:
+        # Avoids allocating massive [B, T, vocab_size] tensor (e.g. 188MB+ in FP32)
+        # Keeps peak activation memory minimal and prevents OOM on large vocabulary.
+        chunk_size = 256
+        loss_sum = 0.0
+        total_tokens = 0
+        for i in range(0, T, chunk_size):
+            x_chunk = x[:, i:i + chunk_size]
+            targets_chunk = targets[:, i:i + chunk_size]
+
+            mask = targets_chunk != -100
+            num_valid = mask.sum()
+            if num_valid == 0:
+                continue
+
+            logits_chunk = self.output(x_chunk)
+            chunk_loss = F.cross_entropy(
+                logits_chunk.reshape(-1, logits_chunk.size(-1)),
+                targets_chunk.reshape(-1),
                 ignore_index=-100,
+                reduction="sum",
             )
+            loss_sum = loss_sum + chunk_loss
+            total_tokens = total_tokens + num_valid
 
-        return logits, loss
+        if total_tokens > 0:
+            loss = loss_sum / total_tokens
+        else:
+            loss = torch.tensor(0.0, device=x.device, requires_grad=True)
+
+        return None, loss
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
