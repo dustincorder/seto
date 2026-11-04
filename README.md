@@ -1,190 +1,197 @@
 # Seto
 
-Tiny language model for mobile deployment. Bilingual: Russian + English.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
+[![Status: Experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#development-status)
 
-## Architecture
+Seto is an experimental tiny language model project focused on efficient local inference on laptops, smartphones, and resource-constrained devices.
 
-| Spec | tiny (~200M) | small (~500M) | base (~1B) |
-|------|-------------|---------------|------------|
-| d_model | 1024 | 1280 | 2048 |
+---
+
+## Overview
+
+Seto explores high-efficiency language modeling trained from scratch under strict compute budgets (such as dual-GPU Kaggle/Colab setups) and tuned for edge execution.
+
+### Key Priorities
+
+- **Parameter Budget**: Models up to 2 billion parameters, prioritizing compact variants (**Seto Tiny / Daily**).
+- **Training from Scratch**: Purpose-built multilingual tokenization, data curation, pretraining, and alignment pipelines.
+- **Multilingual Support**: Balanced tokenization and training across English, Russian, and Ukrainian.
+- **Agentic Capabilities**: Native tool-calling schemas and multi-turn conversational steering.
+- **Edge Deployment**: Fast local inference across CPU and mobile GPU runtimes.
+
+> [!NOTE]
+> **Development Status**: Experimental research stage. Model architecture and hyperparameters are actively being evaluated and are subject to revision. Pretraining and alignment scripts in this repository represent active prototypes rather than finalized releases.
+
+---
+
+## Architecture Summary
+
+Current experimental model configurations:
+
+| Parameter | Tiny (~200M) | Small (~500M) | Base / 1B (~1.1B) |
+| :--- | :--- | :--- | :--- |
+| `d_model` | 1024 | 1280 | 2048 |
 | Layers | 14 | 24 | 22 |
-| Heads | 16 (Q) / 4 (KV) | 20 (Q) / 5 (KV) | 16 (Q) / 4 (KV) |
-| FFN | 2816 (SwiGLU) | 3584 (SwiGLU) | 5504 (SwiGLU) |
-| Context | 1024 | 2048 | 2048 |
-| Vocab | 48k | 48k | 48k |
-| Norm | RMSNorm | RMSNorm | RMSNorm |
-| Position | RoPE | RoPE | RoPE |
-| Attention | GQA + SDPA | GQA + SDPA | GQA + SDPA |
-| Embeddings | Tied | Tied | Tied |
+| Heads (Q / KV) | 16 / 4 (GQA) | 20 / 5 (GQA) | 16 / 4 (GQA) |
+| FFN Dimension | 2816 (SwiGLU) | 3584 (SwiGLU) | 5504 (SwiGLU) |
+| Context Length | 1024 | 2048 | 2048 |
+| Vocabulary | 48,000 BPE | 48,000 BPE | 48,000 BPE |
+| Positional Embeddings | RoPE | RoPE | RoPE |
+| Attention | SDPA + GQA | SDPA + GQA | SDPA + GQA |
+| Normalization | RMSNorm | RMSNorm | RMSNorm |
+
+For detailed breakdown, memory strategies, and layer formulations, refer to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
 
 ## Pipeline
 
-```
-1. Train tokenizer (48k BPE, RU/UK/EN)
-        ↓
-2. Download data (FineWeb2 RU + Wikipedia RU)
-        ↓
-3. Tokenize → pack uint16 shards
-        ↓
-4. Pretrain (~200M for testing, ~500M for real)
-        ↓
-5. SFT (weighted UltraChat + WildChat + OASST + RU + curated synthetic)
-        ↓
-6. (optional) DPO
-        ↓
-seto-final.zip
+Seto implements an end-to-end training and alignment lifecycle:
+
+```mermaid
+flowchart TD
+    A["1. Tokenizer Training<br/>(48k BPE, Multilingual EN/RU/UK)"] --> B["2. Data Curation & Sharding<br/>(FineWeb2, Wikipedia, uint16 shards)"]
+    B --> C["3. Pretraining<br/>(FP16, SDPA, Gradient Checkpointing)"]
+    C --> D["4. Supervised Fine-Tuning (SFT)<br/>(Conversations, Instructions, Tool Calling)"]
+    D --> E["5. Direct Preference Optimization (DPO)<br/>(Alignment & Refusals)"]
+    E --> F["6. Export & Inference<br/>(Standalone weights, ZIP bundles, CLI chat)"]
 ```
 
-## Quick Start
+---
+
+## Project Structure
+
+```
+seto/
+├── configs/            # SFT corpus and run configurations
+├── datasets/           # Fixtures, test datasets, and validation manifests
+│   └── validation/     # Curated validation split guides
+├── docs/               # Extended documentation
+│   ├── ARCHITECTURE.md # Architectural specifications and design notes
+│   └── ROADMAP.md      # Development milestones and priorities
+├── notebooks/          # Training notebooks and single-cell scripts (Kaggle/Colab)
+├── scripts/            # CLI utilities: data prep, training, filtering, chat
+├── seto/               # Core library
+│   ├── config.py       # ModelConfig, TrainConfig dataclasses
+│   ├── model.py        # Transformer implementation (GQA, RoPE, SwiGLU)
+│   ├── tokenizer.py    # Custom BPE tokenizer wrapper & special tokens
+│   ├── trainer.py      # Pretraining loop, memory optimizations, checkpointing
+│   ├── sft.py          # Supervised fine-tuning trainer & packing
+│   ├── dpo.py          # Direct Preference Optimization trainer
+│   └── data.py         # Streaming dataset loaders & binary shard parsers
+├── CONTRIBUTING.md     # Guidelines for contributors
+└── pyproject.toml      # Project dependencies and tool settings
+```
+
+---
+
+## Getting Started
+
+### Installation
+
+Clone the repository and install dependencies in a virtual environment:
 
 ```bash
-# 1. Train tokenizer
+git clone https://github.com/dustincorder/seto.git
+cd seto
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+```
+
+For development tooling (linters and testing tools):
+
+```bash
+pip install -e ".[dev]"
+```
+
+---
+
+## Usage Workflow
+
+### 1. Tokenizer & Shard Preparation
+
+Train the 48k BPE tokenizer:
+
+```bash
 python scripts/prepare_data.py --output-dir data --tokenizer-dir seto-tokenizer
+```
 
-# 2. Prepare shards
+Tokenize and pack raw pretraining text into `uint16` binary shards:
+
+```bash
 python scripts/prepare_data.py --output-dir data --tokenizer-dir seto-tokenizer --skip-tokenizer
+```
 
-# 3. Pretrain
+### 2. Pretraining
+
+Run distributed pretraining with `torchrun`:
+
+```bash
 torchrun --nproc_per_node=2 scripts/train.py \
-  --stage pretrain --model-config tiny \
-  --data-dir data/shards --output-dir output
-
-# 4. Chat
-python scripts/chat.py --model output/final_pretrain --tokenizer seto-tokenizer
+  --stage pretrain \
+  --model-config tiny \
+  --data-dir data/shards \
+  --output-dir output
 ```
 
-Final exports package model config and tokenizer, so SFT ZIPs can be opened
-directly without selecting architecture manually:
+### 3. SFT Alignment & Multi-Turn Mixing
+
+Prepare and filter conversational datasets:
 
 ```bash
-python scripts/chat.py --model output/final_sft.zip
-python scripts/chat.py --model output/final_sft/model.pt
-python scripts/chat.py --model output/final_sft.zip --prompt "Привет, кто ты?"
-```
-
-Use `--tokenizer PATH` only for older exports that did not package tokenizer
-files recursively.
-
-## Data
-
-### Pretrain
-- FineWeb2 `rus_Cyrl` (85%)
-- Wikipedia `20231101.ru` (15%)
-
-### SFT
-- UltraChat (40%)
-- WildChat cleaned (25%)
-- OpenAssistant reviewed paths (15%)
-- Russian instruction/dialogue data (10%)
-- Curated synthetic data (10%)
-
-### Tokenizer
-- 48k BPE vocab
-- Trained on RU (80%) + UK (10%) + EN (10%)
-- Special tokens: `<bos>`, `<eos>`, `<pad>`, `<|system|>`, `<|user|>`,
-  `<|assistant|>`, `<|tool_call|>`, `<|tool_result|>`
-
-### SFT data preparation
-
-SFT records use one canonical format:
-
-```json
-{"messages":[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}
-```
-
-Convert pinned OASST1 trees into one deterministic, reviewed path per tree:
-
-```bash
+# Convert reviewed OpenAssistant dialogues
 python scripts/prepare_oasst.py \
   --languages ru,en --max-turns 12 --max-chars 12000 \
-  --min-reviews 1 \
-  --output datasets/sft/oasst1.jsonl \
-  --metadata-output datasets/sft/oasst1.meta.jsonl \
-  --manifest-output datasets/sft/oasst1.manifest.json
-```
+  --output datasets/sft/oasst1.jsonl
 
-Filter general SFT data while preserving useful bounded refusals. Valid
-roleplay can be routed into a separate future personality dataset:
-
-```bash
-python scripts/sft_filter.py \
-  --input datasets/sft/raw.jsonl \
-  --output datasets/sft/clean.jsonl \
-  --roleplay-output datasets/sft/roleplay.jsonl --stats
-```
-
-Validation is curated separately and never sampled from OASST training trees.
-See `datasets/validation/README.md`.
-
-Build the weighted v1 corpus after every source has been converted and
-filtered. Weights apply to trainable assistant/tool-call turns rather than raw
-conversation rows. Sampling never repeats records; unavailable quota is
-redistributed and reported in the manifest.
-
-```bash
+# Build balanced weighted SFT corpus
 python scripts/mix_sft.py \
   --config configs/sft-v1.json \
-  --output datasets/sft/seto-sft-v1.jsonl \
-  --metadata-output datasets/sft/seto-sft-v1.meta.jsonl \
-  --manifest-output datasets/sft/seto-sft-v1.manifest.json
+  --output datasets/sft/seto-sft-v1.jsonl
 ```
 
-### SFT smoke test
-
-Run on Kaggle or Colab before using the full mix. The fixture contains
-multi-turn dialogue and one complete tool-call/result/final-answer sequence.
+Run SFT training from an existing pretraining checkpoint:
 
 ```bash
-python scripts/check_sft_batch.py \
-  --dataset datasets/test-sft.jsonl \
-  --tokenizer seto-tokenizer --seq-len 1024
-
 python scripts/train.py \
-  --stage sft --model-config small \
-  --dataset datasets/test-sft.jsonl \
+  --stage sft \
+  --model-config tiny \
+  --dataset datasets/sft/seto-sft-v1.jsonl \
   --tokenizer seto-tokenizer \
-  --init-from seto-small/final_pretrain.zip \
-  --output-dir smoke-sft --max-steps 10 --save-every 10
+  --init-from output/final_pretrain.zip \
+  --output-dir output-sft
 ```
 
-Preflight must report 15 SFT targets: 14 assistant and one tool call. Training
-must load the old checkpoint, resize vocabulary when needed, avoid shape
-mismatches, and produce finite loss.
+### 4. Interactive Chat
 
-### First 50M-token SFT run
+Run inference using a trained checkpoint directory or packaged ZIP bundle:
 
-`notebooks/kaggle-sft-v1-cell.py` is a single Kaggle cell for the first real
-SFT pass on 2x T4. It streams pinned public datasets, converts source-specific
-schemas, creates a deterministic 50,000-target mix, trains for 3,000 optimizer
-steps, and removes caches/checkpoints after successful final export.
+```bash
+# Interactive conversation
+python scripts/chat.py --model output/final_sft.zip
 
-Target mix:
+# One-shot prompt
+python scripts/chat.py --model output/final_sft.zip --prompt "Hello! What can you do?"
+```
 
-- 40% UltraChat instructions
-- 11% cleaned WildChat multi-turn
-- 14% reviewed OASST human dialogue
-- 15% cleaned WildChat casual dialogue
-- 10% Russian instructions
-- 10% Hermes function calling
+---
 
-OASST also admits Ukrainian conversations. Source revisions, licenses, counts,
-rejections, actual weights, and hashes are retained beside `final_sft.zip`.
+## Roadmap
 
-## Training Notes
+See [docs/ROADMAP.md](docs/ROADMAP.md) for milestone tracking, architecture exploration plans, and post-training schedules.
 
-- **FP16** for T4 (Turing) — no bf16 on T4
-- **SDPA** attention — auto-selects best backend
-- **uint16 shards** — 1B tokens ≈ 2GB
-- **Full checkpoints** — model + optimizer + scheduler + RNG + tokens_seen
-- **Resume** between Kaggle sessions
+---
 
-## Kaggle
+## Contributing
 
-1. Upload `seto/` as dataset
-2. Run `scripts/prepare_data.py` (tokenizer + shards)
-3. Run `scripts/train.py --stage pretrain`
-4. Checkpoints auto-saved to `/kaggle/working/`
+Contributions and issue discussions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and code style conventions.
+
+---
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
