@@ -33,7 +33,7 @@ def _mask_sensitive(args):
         elif val in ("--token", "--hf-token", "--api-key", "--password"):
             masked.append(val)
             hide_next = True
-        elif val.startswith(("--token=", "--hf-token=", "--api-key=")):
+        elif val.startswith(("--token=", "--hf-token=", "--api-key=", "--password=")):
             flag, _ = val.split("=", 1)
             masked.append(f"{flag}=[REDACTED]")
         else:

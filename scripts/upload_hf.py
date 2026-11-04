@@ -53,7 +53,10 @@ def main():
     parser.add_argument("--repo-id", required=True, help="HF repo ID, e.g., 'your-username/seto-small-sft'")
     parser.add_argument("--token", default=None, help="HF write token (or set HF_TOKEN env var)")
     parser.add_argument("--model", default=None, help="Path to final_sft.zip (auto-detected if omitted)")
-    parser.add_argument("--private", action="store_true", help="Make HF repository private")
+    parser.add_argument("--private", action="store_true", default=True,
+                        help="Make HF repository private (default: True for security)")
+    parser.add_argument("--public", dest="private", action="store_false",
+                        help="Explicitly make HF repository public")
     parser.add_argument("--include-unpacked", action="store_true", default=True,
                         help="Also upload unpacked model.pt and config.json")
     args = parser.parse_args()

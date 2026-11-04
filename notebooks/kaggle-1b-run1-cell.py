@@ -37,7 +37,7 @@ def _mask_sensitive(args):
         elif val in ("--token", "--hf-token", "--api-key", "--password"):
             masked.append(val)
             hide_next = True
-        elif val.startswith(("--token=", "--hf-token=", "--api-key=")):
+        elif val.startswith(("--token=", "--hf-token=", "--api-key=", "--password=")):
             flag, _ = val.split("=", 1)
             masked.append(f"{flag}=[REDACTED]")
         else:
@@ -178,11 +178,13 @@ if not hf_token:
 if hf_token:
     print("\n☁️ Автоматическая выгрузка чекпоинта на Hugging Face (аутентификация через HF_TOKEN)...")
     try:
+        # Checkpoint repositories are created private by default. Pass --public to upload_hf.py to opt into public publishing.
         run(
             sys.executable,
             "scripts/upload_hf.py",
             "--model", root_final_zip,
             "--repo-id", "dustincorder/seto-1.1b-pretrain",
+            "--private",
             cwd=REPO,
         )
     except subprocess.CalledProcessError as e:
