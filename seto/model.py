@@ -1,6 +1,5 @@
 """Seto-1B: Decoder-only Transformer with GQA, SwiGLU, RoPE, RMSNorm, SDPA."""
 
-import math
 from typing import Optional, Tuple
 
 import torch
@@ -24,6 +23,27 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
 
+class QKRMSNorm(nn.Module):
+    """Gemma 3 style: FP32 RMS, zero-initialized unit-offset scale, shared heads."""
+
+    def __init__(self, dim: int, eps: float):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        xf = x.float()
+        normalized = xf * torch.rsqrt(xf.square().mean(-1, keepdim=True) + self.eps)
+        return (normalized * (1.0 + self.weight.float())).to(x.dtype)
+
+
+def sliding_window_mask(length: int, window: int, device=None) -> torch.Tensor:
+    """SDPA boolean keep mask: window includes self and window-1 preceding keys."""
+    positions = torch.arange(length, device=device)
+    distance = positions[:, None] - positions[None, :]
+    return (distance >= 0) & (distance < window)
+
+
 def precompute_freqs_cis(dim: int, max_seq_len: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
     t = torch.arange(max_seq_len, dtype=torch.float32)
@@ -42,17 +62,22 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
 
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int = 0):
         super().__init__()
+        self.window = (config.sliding_window if
+                       config.attention_pattern[layer_idx % len(config.attention_pattern)] == "local"
+                       else None)
+        self.q_norm = QKRMSNorm(config.resolved_head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
+        self.k_norm = QKRMSNorm(config.resolved_head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
         self.n_heads = config.n_heads
         self.n_kv_heads = config.n_kv_heads
-        self.head_dim = config.head_dim
+        self.head_dim = config.resolved_head_dim
         self.n_rep = self.n_heads // self.n_kv_heads
 
-        self.q_proj = nn.Linear(config.d_model, config.n_heads * config.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.d_model, config.n_kv_heads * config.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.d_model, config.n_kv_heads * config.head_dim, bias=False)
-        self.o_proj = nn.Linear(config.n_heads * config.head_dim, config.d_model, bias=False)
+        self.q_proj = nn.Linear(config.d_model, config.n_heads * config.resolved_head_dim, bias=False)
+        self.k_proj = nn.Linear(config.d_model, config.n_kv_heads * config.resolved_head_dim, bias=False)
+        self.v_proj = nn.Linear(config.d_model, config.n_kv_heads * config.resolved_head_dim, bias=False)
+        self.o_proj = nn.Linear(config.n_heads * config.resolved_head_dim, config.d_model, bias=False)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -77,15 +102,19 @@ class GroupedQueryAttention(nn.Module):
         k = self.k_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = apply_rotary_emb(q, freqs_cis)
-        k = apply_rotary_emb(k, freqs_cis)
+        q = apply_rotary_emb(self.q_norm(q), freqs_cis)
+        k = apply_rotary_emb(self.k_norm(k), freqs_cis)
 
+        mask = sliding_window_mask(T, self.window, x.device) if self.window else None
+        attention_args = dict(
+            attn_mask=mask, is_causal=mask is None,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+        )
         if self.n_rep > 1:
             try:
                 attn_output = F.scaled_dot_product_attention(
                     q, k, v,
-                    dropout_p=self.attn_dropout.p if self.training else 0.0,
-                    is_causal=True,
+                    **attention_args,
                     enable_gqa=True,
                 )
             except (TypeError, RuntimeError):
@@ -93,14 +122,12 @@ class GroupedQueryAttention(nn.Module):
                 v = self.repeat_kv(v)
                 attn_output = F.scaled_dot_product_attention(
                     q, k, v,
-                    dropout_p=self.attn_dropout.p if self.training else 0.0,
-                    is_causal=True,
+                    **attention_args,
                 )
         else:
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
-                dropout_p=self.attn_dropout.p if self.training else 0.0,
-                is_causal=True,
+                **attention_args,
             )
 
         out = attn_output.transpose(1, 2).contiguous().view(B, T, -1)
@@ -120,9 +147,9 @@ class SwiGLU(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int = 0):
         super().__init__()
-        self.attention = GroupedQueryAttention(config)
+        self.attention = GroupedQueryAttention(config, layer_idx)
         self.feed_forward = SwiGLU(config)
         self.attention_norm = RMSNorm(config.d_model, config.norm_eps)
         self.ffn_norm = RMSNorm(config.d_model, config.norm_eps)
@@ -145,14 +172,14 @@ class SetoLM(nn.Module):
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.d_model)
         self.dropout = nn.Dropout(config.dropout)
 
-        self.layers = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
+        self.layers = nn.ModuleList([TransformerBlock(config, i) for i in range(config.n_layers)])
         self.norm = RMSNorm(config.d_model, config.norm_eps)
         self.output = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         if config.tie_embeddings:
             self.output.weight = self.tok_embeddings.weight
 
-        freqs_cis = precompute_freqs_cis(config.head_dim, config.max_seq_len * 2, config.rope_theta)
+        freqs_cis = precompute_freqs_cis(config.resolved_head_dim, config.max_seq_len * 2, config.rope_theta)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
         self.apply(self._init_weights)

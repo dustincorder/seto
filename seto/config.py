@@ -1,7 +1,7 @@
 """Seto model and training configuration."""
 
-from dataclasses import dataclass, field
-from typing import Optional, List
+from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -19,21 +19,47 @@ class ModelConfig:
     norm_eps: float = 1e-6
     use_gradient_checkpointing: bool = True
 
+    # None retains the legacy d_model / n_heads projection width.
+    head_dim: Optional[int] = None
+    qk_norm: bool = False
+    sliding_window: Optional[int] = None
+    attention_pattern: tuple[str, ...] = ("local", "local", "local", "global")
+
+    def __post_init__(self):
+        for name in ("vocab_size", "d_model", "n_layers", "n_heads", "n_kv_heads",
+                     "d_ff", "max_seq_len"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.n_heads % self.n_kv_heads:
+            raise ValueError("n_heads must be divisible by n_kv_heads")
+        if self.head_dim is None:
+            if self.d_model % self.n_heads:
+                raise ValueError("d_model must be divisible by n_heads when head_dim is omitted")
+        head_dim = self.resolved_head_dim
+        if type(head_dim) is not int or head_dim <= 0 or head_dim % 2:
+            raise ValueError("head_dim must be a positive even integer for RoPE")
+        if self.sliding_window is not None:
+            if type(self.sliding_window) is not int or self.sliding_window <= 0:
+                raise ValueError("sliding_window must be a positive integer")
+        self.attention_pattern = tuple(self.attention_pattern)
+        if not self.attention_pattern or any(
+            kind not in ("local", "global") for kind in self.attention_pattern
+        ):
+            raise ValueError("attention_pattern must contain local/global layer types")
+
     @property
-    def head_dim(self) -> int:
-        return self.d_model // self.n_heads
+    def resolved_head_dim(self) -> int:
+        """Effective projection width; keep head_dim=None implicit across replace/JSON."""
+        return self.d_model // self.n_heads if self.head_dim is None else self.head_dim
 
     def num_params(self) -> int:
-        embed = self.vocab_size * self.d_model  # token embeddings
-        per_layer = (
-            self.d_model * (self.d_model + 2 * (self.d_model // self.n_heads * self.n_kv_heads))
-            + self.d_model * self.d_model
-            + 3 * self.d_model * self.d_ff
-            + 2 * self.d_model  # 2x RMSNorm (attention_norm, ffn_norm)
-        )
-        final_norm = self.d_model  # final RMSNorm
-        lm_head = 0 if self.tie_embeddings else self.vocab_size * self.d_model
-        return embed + self.n_layers * per_layer + final_norm + lm_head
+        embed = self.vocab_size * self.d_model
+        attention = 2 * self.d_model * self.resolved_head_dim * (self.n_heads + self.n_kv_heads)
+        per_layer = (attention + 3 * self.d_model * self.d_ff + 2 * self.d_model
+                     + (2 * self.resolved_head_dim if self.qk_norm else 0))
+        lm_head = 0 if self.tie_embeddings else embed
+        return embed + self.n_layers * per_layer + self.d_model + lm_head
 
 
 MODEL_TINY = ModelConfig(
