@@ -1,33 +1,86 @@
+# Byte-compiled / optimized / C-extension files
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
-dist/
+*.so
+
+# Distribution / packaging
+.Python
 build/
-*.egg
+develop-eggs/
+dist/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-seto-output/
-checkpoints/
-*.zip
-*.pt
-*.pth
-*.bin
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
 
-wandb/
-.ml
-.env
+# IDE and editor caches
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
+# Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-node_modules/
-.vscode/
-.idea/
-
+# Logs, temporary files, and debug
 *.log
 *.tmp
 *.bak
+*.pid
 
+# Weights, checkpoints, and artifacts
+checkpoints/
+seto-output/
+output/
+smoke-sft/
+final_*/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.zip
+*.tar.gz
+*.tar
+
+# Datasets and processed data shards
+data/
+*.binshards
+*.arrow
+*.parquet
+
+# Tokenizer outputs
 seto-tokenizer/
 tokenizer/
+
+# Experiment trackers and telemetry
+wandb/
+.ml
+.env
+.env.*
+!.env.example
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
