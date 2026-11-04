@@ -31,8 +31,13 @@ Seto is designed as an efficient, compact language model optimized for on-device
 - Rotary positional embeddings applied to queries and keys per layer to maintain relative token distance awareness.
 
 ### 3. SwiGLU Feed-Forward Network
-- Gated Linear Units with SiLU activation: $\text{FFN}(x) = (W_{\text{gate}} x \cdot \sigma(W_{\text{gate}} x)) W_{\text{down}}$.
-- Scaled hidden dimension to match transformer capacity without unnecessary parameter bloat.
+- Gated Linear Units with SiLU activation:
+  $$\text{FFN}(x) = W_{\text{down}} \left( \text{SiLU}(W_{\text{gate}} x) \odot W_{\text{up}} x \right)$$
+- Implementation in `seto/model.py` (`SwiGLU`):
+  ```python
+  self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+  ```
+- Scaled hidden dimension (`d_ff`) to balance transformer capacity without unnecessary parameter bloat.
 
 ### 4. RMSNorm & Pre-Normalization
 - Pre-layer Root Mean Square Normalization applied before self-attention and FFN sub-layers, with an additional final normalization before the language modeling head.

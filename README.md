@@ -1,7 +1,6 @@
 # Seto
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 [![Status: Experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#development-status)
 
 Seto is an experimental tiny language model project focused on efficient local inference on laptops, smartphones, and resource-constrained devices.
@@ -12,16 +11,16 @@ Seto is an experimental tiny language model project focused on efficient local i
 
 Seto explores high-efficiency language modeling trained from scratch under strict compute budgets (such as dual-GPU Kaggle/Colab setups) and tuned for edge execution.
 
-### Key Priorities
+### Key Priorities & Feature Status
 
 - **Parameter Budget**: Models up to 2 billion parameters, prioritizing compact variants (**Seto Tiny / Daily**).
 - **Training from Scratch**: Purpose-built multilingual tokenization, data curation, pretraining, and alignment pipelines.
-- **Multilingual Support**: Balanced tokenization and training across English, Russian, and Ukrainian.
-- **Agentic Capabilities**: Native tool-calling schemas and multi-turn conversational steering.
-- **Edge Deployment**: Fast local inference across CPU and mobile GPU runtimes.
+- **Multilingual Support**: Balanced 48k BPE tokenization trained across Russian (80%), Ukrainian (10%), and English (10%).
+- **Tool Calling & Agentic Capabilities**: *(Planned / Prototype)* Special tokens and target loss masking implemented for `<|tool_call|>` and `<|tool_result|>`; full agentic execution workflows remain in development.
+- **Edge Deployment**: *(Planned / Prototype)* Architecture optimized for low-memory footprint (GQA, tied embeddings); export pipelines to specialized mobile/edge runtimes (e.g. GGUF, ONNX) are planned.
 
 > [!NOTE]
-> **Development Status**: Experimental research stage. Model architecture and hyperparameters are actively being evaluated and are subject to revision. Pretraining and alignment scripts in this repository represent active prototypes rather than finalized releases.
+> **Development Status**: Experimental research stage. The model is not yet fully trained, benchmarked, or released. Scripts and architectures in this repository represent active prototypes under evaluation rather than finalized artifacts.
 
 ---
 
@@ -69,6 +68,7 @@ seto/
 │   └── validation/     # Curated validation split guides
 ├── docs/               # Extended documentation
 │   ├── ARCHITECTURE.md # Architectural specifications and design notes
+│   ├── DATA_AND_SFT.md # Data provenance, filtering, and SFT smoke test protocol
 │   └── ROADMAP.md      # Development milestones and priorities
 ├── notebooks/          # Training notebooks and single-cell scripts (Kaggle/Colab)
 ├── scripts/            # CLI utilities: data prep, training, filtering, chat
@@ -146,13 +146,20 @@ Prepare and filter conversational datasets:
 # Convert reviewed OpenAssistant dialogues
 python scripts/prepare_oasst.py \
   --languages ru,en --max-turns 12 --max-chars 12000 \
-  --output datasets/sft/oasst1.jsonl
+  --min-reviews 1 \
+  --output datasets/sft/oasst1.jsonl \
+  --metadata-output datasets/sft/oasst1.meta.jsonl \
+  --manifest-output datasets/sft/oasst1.manifest.json
 
 # Build balanced weighted SFT corpus
 python scripts/mix_sft.py \
   --config configs/sft-v1.json \
-  --output datasets/sft/seto-sft-v1.jsonl
+  --output datasets/sft/seto-sft-v1.jsonl \
+  --metadata-output datasets/sft/seto-sft-v1.meta.jsonl \
+  --manifest-output datasets/sft/seto-sft-v1.manifest.json
 ```
+
+For data provenance specifications, rejection filtering, and the SFT smoke-test protocol, see [docs/DATA_AND_SFT.md](docs/DATA_AND_SFT.md).
 
 Run SFT training from an existing pretraining checkpoint:
 
@@ -194,4 +201,4 @@ Contributions and issue discussions are welcome. Please read [CONTRIBUTING.md](C
 
 ## License
 
-This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+A formal license file has not yet been designated for this repository. See [pyproject.toml](pyproject.toml) or open an issue for licensing inquiries.
