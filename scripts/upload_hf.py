@@ -61,7 +61,7 @@ def main():
     token = args.token or os.environ.get("HF_TOKEN")
     if not token:
         raise ValueError(
-            "Missing Hugging Face token! Pass --token hf_... or set export HF_TOKEN=hf_..."
+            "Missing Hugging Face token! Set the HF_TOKEN environment variable (recommended) or pass --token."
         )
 
     try:

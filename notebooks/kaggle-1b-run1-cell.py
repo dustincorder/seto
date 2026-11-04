@@ -25,9 +25,30 @@ os.environ["HF_DATASETS_CACHE"] = str(HF_CACHE / "datasets")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["TORCH_NCCL_ENABLE_MONITORING"] = "0"
 
-def run(*command, cwd=None):
-    print("+", " ".join(map(str, command)), flush=True)
-    subprocess.run([str(part) for part in command], cwd=cwd, check=True)
+def _mask_sensitive(args):
+    """Mask potential secrets in logged command-line arguments."""
+    masked = []
+    hide_next = False
+    for arg in args:
+        val = str(arg)
+        if hide_next:
+            masked.append("[REDACTED]")
+            hide_next = False
+        elif val in ("--token", "--hf-token", "--api-key", "--password"):
+            masked.append(val)
+            hide_next = True
+        elif val.startswith(("--token=", "--hf-token=", "--api-key=")):
+            flag, _ = val.split("=", 1)
+            masked.append(f"{flag}=[REDACTED]")
+        else:
+            masked.append(val)
+    return masked
+
+
+def run(*command, cwd=None, env=None):
+    masked = _mask_sensitive(command)
+    print("+", " ".join(masked), flush=True)
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
 
 # 1. Clone / Pull Repository
 if (REPO / ".git").exists():
@@ -141,19 +162,32 @@ except Exception as e:
     print(f"⚠️ Ошибка теста: {e}")
 
 # 7. Optional: Auto-backup to Hugging Face if HF_TOKEN is present
+# Check environment variable first, then Kaggle Secrets if running in Kaggle
 hf_token = os.environ.get("HF_TOKEN")
+if not hf_token:
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        hf_token = user_secrets.get_secret("HF_TOKEN")
+        if hf_token:
+            # Set into environment so subprocesses inherit it without command-line flags
+            os.environ["HF_TOKEN"] = hf_token
+    except Exception:
+        hf_token = None
+
 if hf_token:
-    print("\n☁️ Автоматическая выгрузка чекпоинта на Hugging Face...")
+    print("\n☁️ Автоматическая выгрузка чекпоинта на Hugging Face (аутентификация через HF_TOKEN)...")
     try:
         run(
             sys.executable,
             "scripts/upload_hf.py",
             "--model", root_final_zip,
             "--repo-id", "dustincorder/seto-1.1b-pretrain",
-            "--token", hf_token,
             cwd=REPO,
         )
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ Ошибка выгрузки: процесс завершился с кодом {e.returncode}")
     except Exception as e:
-        print(f"⚠️ Ошибка загрузки на HF: {e}")
+        print(f"⚠️ Ошибка загрузки на HF: {type(e).__name__}")
 
 print("\n🎉 Сессия 1 завершена! Чекпоинт сохранен в Output.")

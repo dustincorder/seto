@@ -21,9 +21,30 @@ OUTPUT = WORK / "seto-sft-v1"
 OLD_SMOKE_OUTPUT = WORK / "seto-sft-smoke"
 
 
-def run(*command, cwd=None):
-    print("+", " ".join(map(str, command)), flush=True)
-    subprocess.run([str(part) for part in command], cwd=cwd, check=True)
+def _mask_sensitive(args):
+    """Mask potential secrets in logged command-line arguments."""
+    masked = []
+    hide_next = False
+    for arg in args:
+        val = str(arg)
+        if hide_next:
+            masked.append("[REDACTED]")
+            hide_next = False
+        elif val in ("--token", "--hf-token", "--api-key", "--password"):
+            masked.append(val)
+            hide_next = True
+        elif val.startswith(("--token=", "--hf-token=", "--api-key=")):
+            flag, _ = val.split("=", 1)
+            masked.append(f"{flag}=[REDACTED]")
+        else:
+            masked.append(val)
+    return masked
+
+
+def run(*command, cwd=None, env=None):
+    masked = _mask_sensitive(command)
+    print("+", " ".join(masked), flush=True)
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
 
 
 candidates = sorted(
