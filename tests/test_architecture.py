@@ -1,6 +1,6 @@
 import io
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from unittest.mock import patch
 
 import pytest
@@ -104,7 +104,8 @@ def test_legacy_defaults():
     )
     config = ModelConfig(**legacy)
     model = SetoLM(config)
-    assert config.head_dim == 4 and not config.qk_norm and config.sliding_window is None
+    assert config.head_dim is None and config.resolved_head_dim == 4
+    assert not config.qk_norm and config.sliding_window is None
     assert not any("q_norm" in key or "k_norm" in key for key in model.state_dict())
     SetoLM(ModelConfig(**legacy)).load_state_dict(model.state_dict(), strict=True)
     # Verify full presets without allocating their storage.
@@ -156,3 +157,53 @@ def test_checkpointed_chunked_loss():
     assert torch.isfinite(loss)
     loss.backward()
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+
+
+@pytest.mark.parametrize("updates,expected", [({"n_heads": 2}, 8), ({"d_model": 32}, 8)])
+def test_replace_implicit_head_dim(updates, expected):
+    config = tiny()
+    changed = replace(config, **updates)
+    assert config.head_dim is None and config.resolved_head_dim == 4
+    assert changed.head_dim is None and changed.resolved_head_dim == expected
+    model = SetoLM(changed)
+    assert model.layers[0].attention.head_dim == expected
+    assert changed.num_params() == model.count_parameters()
+
+
+def test_replace_explicit_head_dim_and_reset():
+    config = tiny(head_dim=4)  # Explicit even when equal to the inferred value.
+    changed = replace(config, n_heads=2, d_model=32)
+    assert changed.head_dim == changed.resolved_head_dim == 4
+    implicit = replace(changed, head_dim=None)
+    assert implicit.head_dim is None and implicit.resolved_head_dim == 16
+    with pytest.raises(ValueError, match="divisible by n_heads"):
+        replace(tiny(), d_model=18)
+    with pytest.raises(ValueError, match="positive even"):
+        replace(tiny(), d_model=12)
+    assert replace(config, d_model=18).resolved_head_dim == 4
+
+
+@pytest.mark.parametrize("explicit", [None, 4, 128])
+@pytest.mark.parametrize("serializer", [asdict, vars])
+def test_head_dim_config_round_trip_preserves_intent(explicit, serializer):
+    config = tiny(head_dim=explicit)
+    payload = json.loads(json.dumps(serializer(config)))
+    assert payload["head_dim"] == explicit
+    restored = ModelConfig(**payload)
+    assert restored == config
+    changed = replace(restored, n_heads=2)
+    assert changed.resolved_head_dim == (8 if explicit is None else explicit)
+    original = SetoLM(config)
+    reloaded = SetoLM(restored)
+    reloaded.load_state_dict(original.state_dict(), strict=True)
+
+
+def test_previous_resolved_integer_config_checkpoint():
+    # v0.1 stored an integer even for automatically derived dimensions.
+    legacy = asdict(tiny())
+    del legacy["head_dim"]
+    implicit = ModelConfig(**legacy)
+    previous = ModelConfig(**(legacy | {"head_dim": 4}))
+    assert implicit.resolved_head_dim == previous.resolved_head_dim
+    SetoLM(previous).load_state_dict(SetoLM(implicit).state_dict(), strict=True)
+    assert replace(previous, n_heads=2).resolved_head_dim == 4

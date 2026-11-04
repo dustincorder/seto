@@ -25,7 +25,12 @@ supported. `attention_pattern` repeats across layers and defaults to
 Without `sliding_window`, every layer is global regardless of the pattern.
 JSON lists are accepted for the pattern. Explicit `head_dim` decouples attention
 projection width from residual width; keeping head counts while increasing it
-increases attention parameters. Omitted `head_dim` derives the legacy quotient.
+increases attention parameters. Omitted or null `head_dim` remains `None` in the
+configuration; `resolved_head_dim` derives the legacy quotient. Thus
+`replace(classic, n_heads=8)` recomputes the implicit dimension, while an explicit
+integer survives changes to head counts or residual width. Use
+`replace(config, head_dim=None)` to return to automatic derivation. Both `asdict`
+and `__dict__` JSON serialization preserve this distinction.
 
 ## QK normalization
 
@@ -72,10 +77,12 @@ weight allocations for small tied/untied models, including head dimension 128.
 
 Old JSON configuration dictionaries load with experiment defaults disabled.
 Classic state-dict names and shapes stay unchanged, permitting strict legacy
-loading. New JSON serialization includes the resolved `head_dim` and experiment
+loading. New JSON serialization includes nullable `head_dim` and experiment
 fields; old software may reject these extra fields. Enabling QK-Norm adds scale
 keys, so strict loading of a Classic checkpoint into that architecture fails as
-expected. A deliberate `strict=False` warm start retains zero-initialized scales
+expected. Previously serialized integer `head_dim` values still load with the same
+projection shapes and are treated as explicit; their original implicit/explicit
+intent cannot be recovered. A deliberate `strict=False` warm start retains zero-initialized scales
 but changes model behavior. Changing head dimension changes projection shapes.
 
 Run `python -m pytest tests/test_architecture.py -q`. Tests use tiny CPU models,
@@ -90,7 +97,7 @@ Verified counts (formula equals unique physical parameters):
 | Small | 490,108,160 | 490,111,232 | 490,111,232 | 588,412,160 |
 | Base | 1,073,047,552 | 1,073,053,184 | 1,073,053,184 | 1,073,047,552 |
 
-Validation: 27 CPU tests passed with Python 3.12 / PyTorch 2.2.2, which exercises
+Validation: 37 CPU tests passed with Python 3.12 / PyTorch 2.2.2, which exercises
 the repeated-KV compatibility path because native SDPA GQA is unavailable there.
 The native-GQA path remains dependent on the installed PyTorch backend; no GPU
 runs were performed. Focused Ruff checks, syntax compilation, and diff whitespace

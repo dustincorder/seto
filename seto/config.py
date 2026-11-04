@@ -36,8 +36,8 @@ class ModelConfig:
         if self.head_dim is None:
             if self.d_model % self.n_heads:
                 raise ValueError("d_model must be divisible by n_heads when head_dim is omitted")
-            self.head_dim = self.d_model // self.n_heads
-        if type(self.head_dim) is not int or self.head_dim <= 0 or self.head_dim % 2:
+        head_dim = self.resolved_head_dim
+        if type(head_dim) is not int or head_dim <= 0 or head_dim % 2:
             raise ValueError("head_dim must be a positive even integer for RoPE")
         if self.sliding_window is not None:
             if type(self.sliding_window) is not int or self.sliding_window <= 0:
@@ -48,11 +48,16 @@ class ModelConfig:
         ):
             raise ValueError("attention_pattern must contain local/global layer types")
 
+    @property
+    def resolved_head_dim(self) -> int:
+        """Effective projection width; keep head_dim=None implicit across replace/JSON."""
+        return self.d_model // self.n_heads if self.head_dim is None else self.head_dim
+
     def num_params(self) -> int:
         embed = self.vocab_size * self.d_model
-        attention = 2 * self.d_model * self.head_dim * (self.n_heads + self.n_kv_heads)
+        attention = 2 * self.d_model * self.resolved_head_dim * (self.n_heads + self.n_kv_heads)
         per_layer = (attention + 3 * self.d_model * self.d_ff + 2 * self.d_model
-                     + (2 * self.head_dim if self.qk_norm else 0))
+                     + (2 * self.resolved_head_dim if self.qk_norm else 0))
         lm_head = 0 if self.tie_embeddings else embed
         return embed + self.n_layers * per_layer + self.d_model + lm_head
 

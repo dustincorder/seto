@@ -24,7 +24,7 @@ def main():
                 model = SetoLM(config)
             physical = sum(p.numel() for p in model.parameters())
             assert config.num_params() == physical
-            print(f"{name},{experiment},{config.head_dim},{config.num_params()},{physical}")
+            print(f"{name},{experiment},{config.resolved_head_dim},{config.num_params()},{physical}")
 
 
 if __name__ == "__main__":

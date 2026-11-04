@@ -67,17 +67,17 @@ class GroupedQueryAttention(nn.Module):
         self.window = (config.sliding_window if
                        config.attention_pattern[layer_idx % len(config.attention_pattern)] == "local"
                        else None)
-        self.q_norm = QKRMSNorm(config.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
-        self.k_norm = QKRMSNorm(config.head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
+        self.q_norm = QKRMSNorm(config.resolved_head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
+        self.k_norm = QKRMSNorm(config.resolved_head_dim, config.norm_eps) if config.qk_norm else nn.Identity()
         self.n_heads = config.n_heads
         self.n_kv_heads = config.n_kv_heads
-        self.head_dim = config.head_dim
+        self.head_dim = config.resolved_head_dim
         self.n_rep = self.n_heads // self.n_kv_heads
 
-        self.q_proj = nn.Linear(config.d_model, config.n_heads * config.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.d_model, config.n_kv_heads * config.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.d_model, config.n_kv_heads * config.head_dim, bias=False)
-        self.o_proj = nn.Linear(config.n_heads * config.head_dim, config.d_model, bias=False)
+        self.q_proj = nn.Linear(config.d_model, config.n_heads * config.resolved_head_dim, bias=False)
+        self.k_proj = nn.Linear(config.d_model, config.n_kv_heads * config.resolved_head_dim, bias=False)
+        self.v_proj = nn.Linear(config.d_model, config.n_kv_heads * config.resolved_head_dim, bias=False)
+        self.o_proj = nn.Linear(config.n_heads * config.resolved_head_dim, config.d_model, bias=False)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -179,7 +179,7 @@ class SetoLM(nn.Module):
         if config.tie_embeddings:
             self.output.weight = self.tok_embeddings.weight
 
-        freqs_cis = precompute_freqs_cis(config.head_dim, config.max_seq_len * 2, config.rope_theta)
+        freqs_cis = precompute_freqs_cis(config.resolved_head_dim, config.max_seq_len * 2, config.rope_theta)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
         self.apply(self._init_weights)
