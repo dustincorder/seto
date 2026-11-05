@@ -1,11 +1,10 @@
-"""Seto checkpoint management — streaming ZIP, no intermediate directories.
-
-Peak disk per checkpoint: single ZIP file (~5.5GB for small).
-No directory + ZIP duplication.
-"""
+"""Crash-safe ZIP checkpoints; old checkpoints survive failed replacement writes."""
 
 import json
+import os
 import shutil
+import tempfile
+import warnings
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -13,6 +12,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+# Only rotate files created by this process; never delete pre-existing user artifacts.
+_MANAGED_CHECKPOINTS = set()
 
 VOCAB_WEIGHT_KEYS = {"tok_embeddings.weight", "output.weight"}
 
@@ -61,56 +62,84 @@ def save_checkpoint(
     scaler=None,
     rng_state: Optional[dict] = None,
     tokens_seen: int = 0,
+    training_state: Optional[dict] = None,
 ) -> str:
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    if keep_last_n < 1:
+        raise ValueError("keep_last_n must be at least one")
+    zip_path = save_dir / f"seto_step_{step:08d}.zip"
+    raw_model = model.module if hasattr(model, "module") else model
+    entries = {"model.pt": raw_model.state_dict(), "optimizer.pt": optimizer.state_dict()}
+    for name, obj in (("scheduler.pt", scheduler), ("scaler.pt", scaler)):
+        if obj is not None:
+            entries[name] = obj.state_dict()
+    if rng_state is not None:
+        entries["rng.pt"] = rng_state
+    if training_state is not None:
+        entries["training.pt"] = training_state
+    meta = dict(format_version=2, step=step, loss=loss, tokens_seen=tokens_seen,
+                config=config, exact_resume=training_state is not None, required_entries=sorted([*entries, "meta.json"]))
 
-    ckpt_name = f"step_{step:08d}"
-    zip_path = save_dir / f"seto_{ckpt_name}.zip"
-    tmp_path = save_dir / f"seto_{ckpt_name}.tmp"
+    if training_state is not None:
+        meta["optimizer_attempts"] = training_state["optimizer_attempts"]
 
-    # Unwrap DDP
-    state_dict = model.state_dict()
-    if hasattr(model, "module"):
-        state_dict = model.module.state_dict()
+    # A conservative estimate catches ordinary low-disk cases; ENOSPC is still handled
+    # by the same rollback path if filesystem overhead/concurrent writers exceed it.
+    required = 16 * 1024**2
+    for value in entries.values():
+        required += _tensor_bytes(value) + 4096 * _tensor_count(value)
+    if shutil.disk_usage(save_dir).free < required:
+        raise OSError(28, f"Checkpoint needs approximately {required} free bytes; old checkpoints retained")
 
-    # Low-disk: remove old checkpoints BEFORE writing new one
-    _cleanup_old_checkpoints(save_dir, keep_last_n, exclude=tmp_path)
-
-    # Write everything directly into ZIP via tmp file
-    # (atomic-ish: if crash mid-write, .tmp won't match seto_step_*.zip glob)
-    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
-        with zf.open("model.pt", "w") as f:
-            torch.save(state_dict, f)
-
-        # Optimizer state can exceed ZIP's 4 GiB per-entry limit.
-        with zf.open("optimizer.pt", "w", force_zip64=True) as f:
-            torch.save(optimizer.state_dict(), f)
-
-        if scheduler is not None:
-            with zf.open("scheduler.pt", "w") as f:
-                torch.save(scheduler.state_dict(), f)
-
-        if scaler is not None and hasattr(scaler, "state_dict"):
-            with zf.open("scaler.pt", "w") as f:
-                torch.save(scaler.state_dict(), f)
-
-        if rng_state is not None:
-            with zf.open("rng.pt", "w") as f:
-                torch.save(rng_state, f)
-
-        meta = {
-            "step": step,
-            "loss": loss,
-            "tokens_seen": tokens_seen,
-            "config": config,
-        }
-        zf.writestr("meta.json", json.dumps(meta, indent=2))
-
-    # Atomic rename: .tmp → final name
-    tmp_path.rename(zip_path)
-
+    fd, temporary = tempfile.mkstemp(prefix=f".{zip_path.stem}-", suffix=".tmp", dir=save_dir)
+    tmp_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w+b") as stream:
+            with zipfile.ZipFile(stream, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+                for name, value in entries.items():
+                    with zf.open(name, "w", force_zip64=True) as entry:
+                        torch.save(value, entry)
+                zf.writestr("meta.json", json.dumps(meta, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        validate_checkpoint(tmp_path)
+        os.replace(tmp_path, zip_path)
+        # Persist the directory entry on platforms supporting directory fsync.
+        try:
+            directory_fd = os.open(save_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    _MANAGED_CHECKPOINTS.add(zip_path.resolve())
+    _cleanup_old_checkpoints(save_dir, keep_last_n, exclude=zip_path)
     return str(zip_path)
+
+
+def _tensor_count(value):
+    if isinstance(value, torch.Tensor):
+        return 1
+    if isinstance(value, dict):
+        return sum(_tensor_count(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_tensor_count(v) for v in value)
+    return 0
+
+
+def _tensor_bytes(value):
+    # Overcount aliases rather than underestimate the required space.
+    if isinstance(value, torch.Tensor):
+        return value.untyped_storage().nbytes()
+    if isinstance(value, dict):
+        return sum(_tensor_bytes(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_tensor_bytes(v) for v in value)
+    return 0
 
 
 def _find_zip_entry(zf: zipfile.ZipFile, name: str) -> Optional[str]:
@@ -177,56 +206,20 @@ def load_checkpoint(
     path = Path(checkpoint_path)
 
     if path.suffix == ".zip":
-        is_distributed = torch.distributed.is_initialized()
-        is_main = (not is_distributed) or torch.distributed.get_rank() == 0
-
         with zipfile.ZipFile(path, "r") as zf:
+            # Explicit weight-only legacy exports may lack metadata; exact resume
+            # separately requires validated training metadata before loading weights.
             model_entry = _find_zip_entry(zf, "model.pt")
             if not model_entry:
                 raise FileNotFoundError(f"model.pt not found in zip: {path}")
-            # Load model safely via tmp file to bypass Python 3.12 stream unpickler bug
-            model_tmp = Path("/tmp/seto_ckpt_model_load.pt")
-            with zf.open(model_entry) as src, open(model_tmp, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            state_dict = _safe_torch_load(model_tmp, map_location=device)
-            model_tmp.unlink(missing_ok=True)
-
             raw_model = model.module if hasattr(model, "module") else model
-            _load_model_state(raw_model, state_dict, allow_vocab_growth)
-
-            # Load optimizer
+            _load_model_state(raw_model, _load_zip_tensor(zf, model_entry, device), allow_vocab_growth)
             opt_entry = _find_zip_entry(zf, "optimizer.pt")
-            if optimizer is not None and opt_entry:
-                opt_tmp = Path("/tmp/seto_ckpt_opt_load.pt")
-                with zf.open(opt_entry) as src, open(opt_tmp, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                optimizer.load_state_dict(
-                    _safe_torch_load(opt_tmp, map_location=device)
-                )
-                opt_tmp.unlink(missing_ok=True)
-
-            # Load metadata
-            meta = {}
-            meta_entry = _find_zip_entry(zf, "meta.json")
-            if meta_entry:
-                meta = json.loads(zf.read(meta_entry).decode())
-
-            sched_entry = _find_zip_entry(zf, "scheduler.pt")
-            if sched_entry:
-                with zf.open(sched_entry) as f:
-                    meta["scheduler"] = _safe_torch_load(f, map_location=device)
-
-            scaler_entry = _find_zip_entry(zf, "scaler.pt")
-            if scaler_entry:
-                with zf.open(scaler_entry) as f:
-                    meta["scaler"] = _safe_torch_load(f, map_location=device)
-
-            rng_entry = _find_zip_entry(zf, "rng.pt")
-            if rng_entry:
-                with zf.open(rng_entry) as f:
-                    meta["rng"] = _safe_torch_load(f, map_location=device)
-
-        return meta
+            if optimizer is not None:
+                if not opt_entry:
+                    raise ValueError("Checkpoint has no optimizer state; use weights-only initialization")
+                optimizer.load_state_dict(_load_zip_tensor(zf, opt_entry, device))
+            return _zip_metadata(zf)
 
     # Legacy: plain directory or direct model file path
     model_file = path if path.is_file() else (path / "model.pt")
@@ -257,34 +250,130 @@ def load_checkpoint(
     return meta
 
 
-def _cleanup_old_checkpoints(save_dir: Path, keep_last_n: int = 1, exclude: Optional[Path] = None):
-    """Keep only the N most recent checkpoint zips. Also cleans legacy dirs."""
-    zips = sorted(save_dir.glob("seto_step_*.zip"), key=lambda x: x.stat().st_mtime)
-    for old in zips[: len(zips) - keep_last_n]:
-        if exclude and old == exclude:
-            continue
-        old.unlink(missing_ok=True)
+def _load_zip_tensor(zf, entry, device="cpu"):
+    # Unique, automatically closed/unlinked even when extraction/deserialization fails.
+    # A seekable file also avoids Python stream-unpickler compatibility issues.
+    with tempfile.TemporaryFile(prefix="seto-load-") as temporary:
+        with zf.open(entry) as source:
+            shutil.copyfileobj(source, temporary)
+        temporary.seek(0)
+        return _safe_torch_load(temporary, map_location=device)
 
-    # Clean legacy directories
-    for d in save_dir.glob("step_*"):
-        if d.is_dir():
-            shutil.rmtree(d, ignore_errors=True)
+
+def _zip_metadata(zf):
+    entry = _find_zip_entry(zf, "meta.json")
+    meta = json.loads(zf.read(entry)) if entry else {}
+    for name in ("scheduler", "scaler", "rng", "training"):
+        entry = _find_zip_entry(zf, name + ".pt")
+        if entry:
+            # RNG byte tensors must remain on CPU, even for CUDA model loading.
+            meta[name] = _load_zip_tensor(zf, entry)
+    return meta
+
+
+def validate_checkpoint(path):
+    """Validate training archive structure, metadata and all entry CRCs (no unpickle)."""
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError("Duplicate checkpoint ZIP entries")
+        for name in ("model.pt", "optimizer.pt", "meta.json"):
+            if not _find_zip_entry(zf, name):
+                raise ValueError(f"Checkpoint missing {name}")
+        meta = json.loads(zf.read(_find_zip_entry(zf, "meta.json")))
+        if not isinstance(meta, dict):
+            raise ValueError("Invalid checkpoint metadata object")
+        if (type(meta.get("step")) is not int or meta["step"] < 0
+                or not isinstance(meta.get("config"), dict)):
+            raise ValueError("Invalid checkpoint metadata")
+        _checkpoint_progress(meta)
+        if meta.get("format_version") not in (None, 2):
+            raise ValueError("Unsupported checkpoint format version")
+        if meta.get("format_version") == 2:
+            if type(meta.get("tokens_seen")) is not int or meta["tokens_seen"] < 0:
+                raise ValueError("Invalid checkpoint token count")
+            required = meta.get("required_entries")
+            if not isinstance(required, list) or not all(isinstance(n, str) for n in required) or not {"model.pt", "optimizer.pt", "meta.json"} <= set(required):
+                raise ValueError("Invalid checkpoint entry manifest")
+            if meta.get("exact_resume") and not {"training.pt", "rng.pt", "scheduler.pt", "scaler.pt"} <= set(required):
+                raise ValueError("Exact checkpoint lacks required resume entries")
+            if any(name not in names for name in required):
+                raise ValueError("Checkpoint missing a declared entry")
+            if any(zf.getinfo(name).file_size == 0 for name in required):
+                raise ValueError("Checkpoint contains an empty required entry")
+        if zf.testzip() is not None:
+            raise ValueError("Checkpoint CRC validation failed")
+        return meta
+
+
+def read_checkpoint_metadata(path):
+    """Exact-resume preflight, before mutating the live model or optimizer."""
+    validate_checkpoint(path)
+    with zipfile.ZipFile(path) as zf:
+        return _zip_metadata(zf)
+
+
+def _cleanup_old_checkpoints(save_dir: Path, keep_last_n: int = 1, exclude: Optional[Path] = None):
+    """Rotate only this process's successful writes, after replacement validation."""
+    zips = sorted((p for p in save_dir.glob("seto_step_*.zip")
+                   if p.resolve() in _MANAGED_CHECKPOINTS), key=lambda p: p.stat().st_mtime_ns)
+    keep = {p.resolve() for p in zips[-keep_last_n:]}
+    if exclude:
+        keep.add(exclude.resolve())
+    for old in zips:
+        if old.resolve() not in keep:
+            try:
+                old.unlink()
+                _MANAGED_CHECKPOINTS.discard(old.resolve())
+            except OSError as error:
+                warnings.warn(f"Checkpoint saved but retention failed for {old}: {error}")
+
+
+def _checkpoint_progress(meta, training=None):
+    """Legacy archives without attempt counts rank by successful step alone."""
+    step = meta.get("step")
+    attempts = meta.get("optimizer_attempts", step)
+    if training is not None:
+        attempts = training.get("optimizer_attempts")
+        if "optimizer_attempts" in meta and meta["optimizer_attempts"] != attempts:
+            raise ValueError("Conflicting checkpoint optimizer attempt counts")
+    if type(step) is not int or step < 0 or type(attempts) is not int or attempts < step:
+        raise ValueError("Invalid checkpoint progress metadata")
+    return step, attempts
 
 
 def get_latest_checkpoint(save_dir: str) -> Optional[str]:
-    save_dir = Path(save_dir)
-
-    # Prefer ZIPs (native format)
-    zips = sorted(save_dir.glob("seto_step_*.zip"), key=lambda x: x.stat().st_mtime)
-    if zips:
-        return str(zips[-1])
-
-    # Fallback to legacy directories
-    dirs = sorted(save_dir.glob("step_*"), key=lambda x: x.stat().st_mtime)
-    if dirs:
-        return str(dirs[-1])
-
-    return None
+    directory = Path(save_dir)
+    candidates = []
+    for path in directory.glob("seto_step_*.zip"):
+        try:
+            meta = validate_checkpoint(path)
+            # v2 checkpoints written before attempt counts were added to meta.json
+            # already store this count in training.pt. Read only this small entry.
+            training = None
+            with zipfile.ZipFile(path) as zf:
+                entry = _find_zip_entry(zf, "training.pt")
+                if entry:
+                    training = _load_zip_tensor(zf, entry)
+                    if not isinstance(training, dict):
+                        raise ValueError("Invalid checkpoint training metadata")
+            progress = _checkpoint_progress(meta, training)
+            candidates.append((*progress, path.stat().st_mtime_ns, str(path)))
+        except (OSError, ValueError, KeyError, RuntimeError, EOFError, zipfile.BadZipFile):
+            continue
+    # Include legacy directories in the same progress ordering; never let a copied
+    # ZIP's newer timestamp override a more advanced valid directory checkpoint.
+    for path in directory.glob("step_*"):
+        if path.is_dir() and all((path / n).is_file() for n in ("model.pt", "optimizer.pt", "meta.json")):
+            try:
+                meta = json.loads((path / "meta.json").read_text())
+                if not isinstance(meta, dict) or not isinstance(meta.get("config"), dict):
+                    continue
+                progress = _checkpoint_progress(meta)
+                candidates.append((*progress, path.stat().st_mtime_ns, str(path)))
+            except (OSError, ValueError):
+                continue
+    return max(candidates)[-1] if candidates else None
 
 
 def clean_checkpoints(save_dir: str):

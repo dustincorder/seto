@@ -1,6 +1,7 @@
 """Seto data — uint16 binary shards, SFT dataset, DPO dataset."""
 
 import bisect
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,8 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, IterableDataset, DataLoader
+from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data.distributed import DistributedSampler
 
 
 def json_data_files(path: Path) -> list[Path]:
@@ -28,6 +30,8 @@ class ShardDataset(Dataset):
         if not shard_files:
             shard_files = sorted(self.data_dir.glob("*.bin"))
 
+        self.shard_files = shard_files
+
         # True memory-mapped: list of memmaps + cumulative offsets
         self.shards = []
         self.offsets = [0]  # cumulative token offsets
@@ -42,6 +46,17 @@ class ShardDataset(Dataset):
         self.n_sequences = self.n_tokens // (seq_len + 1)
 
         print(f"Loaded {self.n_tokens:,} tokens from {len(shard_files)} shards (true mmap)")
+
+    def resume_identity(self) -> dict:
+        """Content identity independent of the Kaggle mount path (full SHA256 scan)."""
+        files = []
+        for path in self.shard_files:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(8 * 1024**2), b""):
+                    digest.update(chunk)
+            files.append(dict(name=path.name, bytes=path.stat().st_size, sha256=digest.hexdigest()))
+        return dict(type="ShardDataset-v1", seq_len=self.seq_len, length=len(self), files=files)
 
     def __len__(self) -> int:
         return max(1, self.n_sequences - 1)
@@ -82,6 +97,34 @@ class ShardDataset(Dataset):
             e = min(end, shard_end) - shard_start
             parts.append(self.shards[i][s:e])
         return np.concatenate(parts) if parts else np.array([], dtype=np.uint16)
+
+
+class ResumableBatchSampler(Sampler):
+    """Deterministic rank-local batches; cursor tracks *consumed*, never prefetched data.
+
+    Only full batches are used; the shuffled global tail is omitted rather than
+    padded with repeated examples. Changing world size/batch size is incompatible.
+    """
+
+    def __init__(self, dataset, batch_size, seed, rank=0, world_size=1):
+        self.sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank,
+                                          shuffle=True, seed=seed, drop_last=True)
+        self.batch_size = batch_size
+        self.epoch = 0
+        self.start_batch = 0
+        self.total_batches = len(self.sampler) // batch_size
+        if self.total_batches == 0:
+            raise ValueError("Dataset has no full batch per rank")
+
+    def __iter__(self):
+        self.sampler.set_epoch(self.epoch)
+        indices = list(self.sampler)
+        for batch in range(self.start_batch, self.total_batches):
+            start = batch * self.batch_size
+            yield indices[start:start + self.batch_size]
+
+    def __len__(self):
+        return self.total_batches - self.start_batch
 
 
 class SFTDataset(Dataset):

@@ -121,6 +121,9 @@ class TrainConfig:
     use_wandb: bool = False
     wandb_project: str = "seto"
 
+    # Deterministic data traversal (separate from rank-specific model RNG).
+    seed: int = 42
+
     # Data
     data_dir: str = "data/shards"
     val_data: str = ""
