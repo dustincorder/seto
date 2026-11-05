@@ -51,6 +51,9 @@ def parse_args():
     data = p.add_mutually_exclusive_group(required=True)
     data.add_argument("--data-dir", help="Directory with .bin shards or SFT/DPO data")
     data.add_argument("--dataset", help="SFT/DPO JSON or JSONL file")
+    p.add_argument("--val-data-dir", default=None,
+                   help="Optional directory with validation shards (or searches data-dir for val_*.bin)")
+    p.add_argument("--val-dataset", default=None, help="Optional validation dataset path")
     p.add_argument("--output-dir", default="seto-output")
     p.add_argument("--tokenizer", default="seto-tokenizer")
     p.add_argument("--resume", default=None, help="Resume from checkpoint (same stage)")
@@ -294,8 +297,23 @@ def main():
             print(f"[train.py] Device: {device} | LOCAL_RANK: {local_rank}", flush=True)
 
         if args.stage in ("pretrain", "cooldown"):
-            dataset = ShardDataset(args.data_dir, seq_len=model_config.max_seq_len)
-            trainer = SetoTrainer(model, dataset, config=train_config, local_rank=args.local_rank)
+            dataset = ShardDataset(args.data_dir, seq_len=model_config.max_seq_len, split="train", strict_split=False)
+            val_dataset = None
+            val_dir = args.val_data_dir
+            if not val_dir and args.data_dir:
+                # Check if val_*.bin shards exist in data_dir
+                if list(Path(args.data_dir).glob("val_*.bin")):
+                    val_dir = args.data_dir
+            if val_dir:
+                try:
+                    val_dataset = ShardDataset(val_dir, seq_len=model_config.max_seq_len, split="val", strict_split=True)
+                    if is_main:
+                        print(f"[train.py] Validation enabled: loaded {len(val_dataset)} sequences from {val_dir}", flush=True)
+                except FileNotFoundError as err:
+                    if is_main:
+                        print(f"[train.py] Warning: Validation dataset could not be loaded: {err}", flush=True)
+
+            trainer = SetoTrainer(model, dataset, val_dataset=val_dataset, config=train_config, local_rank=args.local_rank)
 
             if args.resume:
                 trainer.resume(args.resume)

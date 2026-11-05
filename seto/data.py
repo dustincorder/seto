@@ -22,13 +22,17 @@ def json_data_files(path: Path) -> list[Path]:
 class ShardDataset(Dataset):
     """Memory-mapped uint16 binary shards — true mmap, no concatenation."""
 
-    def __init__(self, data_dir: str, seq_len: int = 1024, split: str = "train"):
+    def __init__(self, data_dir: str, seq_len: int = 1024, split: str = "train", strict_split: bool = False):
         self.seq_len = seq_len
         self.data_dir = Path(data_dir)
 
         shard_files = sorted(self.data_dir.glob(f"{split}_*.bin"))
         if not shard_files:
+            if strict_split or split != "train":
+                raise FileNotFoundError(f"No shard files found for split '{split}' in {data_dir} (expected pattern: {split}_*.bin)")
             shard_files = sorted(self.data_dir.glob("*.bin"))
+            if not shard_files:
+                raise FileNotFoundError(f"No shard files found in {data_dir}")
 
         self.shard_files = shard_files
 
@@ -468,10 +472,12 @@ def pack_from_hf_dataset(
     print(f"Packed {total_tokens:,} tokens from {count:,} samples")
 
 
-def find_shards(data_dir: str, split: str = "train") -> List[str]:
+def find_shards(data_dir: str, split: str = "train", strict_split: bool = False) -> List[str]:
     data_path = Path(data_dir)
     shards = sorted(data_path.glob(f"{split}_*.bin"))
     if not shards:
+        if strict_split or split != "train":
+            raise FileNotFoundError(f"No shard files found for split '{split}' in {data_dir} (expected pattern: {split}_*.bin)")
         shards = sorted(data_path.glob("*.bin"))
     return [str(s) for s in shards]
 
