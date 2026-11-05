@@ -81,6 +81,9 @@ def save_checkpoint(
     meta = dict(format_version=2, step=step, loss=loss, tokens_seen=tokens_seen,
                 config=config, exact_resume=training_state is not None, required_entries=sorted([*entries, "meta.json"]))
 
+    if training_state is not None:
+        meta["optimizer_attempts"] = training_state["optimizer_attempts"]
+
     # A conservative estimate catches ordinary low-disk cases; ENOSPC is still handled
     # by the same rollback path if filesystem overhead/concurrent writers exceed it.
     required = 16 * 1024**2
@@ -283,6 +286,7 @@ def validate_checkpoint(path):
         if (type(meta.get("step")) is not int or meta["step"] < 0
                 or not isinstance(meta.get("config"), dict)):
             raise ValueError("Invalid checkpoint metadata")
+        _checkpoint_progress(meta)
         if meta.get("format_version") not in (None, 2):
             raise ValueError("Unsupported checkpoint format version")
         if meta.get("format_version") == 2:
@@ -325,25 +329,51 @@ def _cleanup_old_checkpoints(save_dir: Path, keep_last_n: int = 1, exclude: Opti
                 warnings.warn(f"Checkpoint saved but retention failed for {old}: {error}")
 
 
+def _checkpoint_progress(meta, training=None):
+    """Legacy archives without attempt counts rank by successful step alone."""
+    step = meta.get("step")
+    attempts = meta.get("optimizer_attempts", step)
+    if training is not None:
+        attempts = training.get("optimizer_attempts")
+        if "optimizer_attempts" in meta and meta["optimizer_attempts"] != attempts:
+            raise ValueError("Conflicting checkpoint optimizer attempt counts")
+    if type(step) is not int or step < 0 or type(attempts) is not int or attempts < step:
+        raise ValueError("Invalid checkpoint progress metadata")
+    return step, attempts
+
+
 def get_latest_checkpoint(save_dir: str) -> Optional[str]:
     directory = Path(save_dir)
-    for path in sorted(directory.glob("seto_step_*.zip"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+    candidates = []
+    for path in directory.glob("seto_step_*.zip"):
         try:
-            validate_checkpoint(path)
-            return str(path)
-        except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+            meta = validate_checkpoint(path)
+            # v2 checkpoints written before attempt counts were added to meta.json
+            # already store this count in training.pt. Read only this small entry.
+            training = None
+            with zipfile.ZipFile(path) as zf:
+                entry = _find_zip_entry(zf, "training.pt")
+                if entry:
+                    training = _load_zip_tensor(zf, entry)
+                    if not isinstance(training, dict):
+                        raise ValueError("Invalid checkpoint training metadata")
+            progress = _checkpoint_progress(meta, training)
+            candidates.append((*progress, path.stat().st_mtime_ns, str(path)))
+        except (OSError, ValueError, KeyError, RuntimeError, EOFError, zipfile.BadZipFile):
             continue
-    # Older directory checkpoints are loadable explicitly; require metadata and
-    # both states for auto-discovery. Never delete them as part of ZIP retention.
-    for path in sorted(directory.glob("step_*"), reverse=True):
+    # Include legacy directories in the same progress ordering; never let a copied
+    # ZIP's newer timestamp override a more advanced valid directory checkpoint.
+    for path in directory.glob("step_*"):
         if path.is_dir() and all((path / n).is_file() for n in ("model.pt", "optimizer.pt", "meta.json")):
             try:
                 meta = json.loads((path / "meta.json").read_text())
-                if type(meta.get("step")) is int and isinstance(meta.get("config"), dict):
-                    return str(path)
+                if not isinstance(meta, dict) or not isinstance(meta.get("config"), dict):
+                    continue
+                progress = _checkpoint_progress(meta)
+                candidates.append((*progress, path.stat().st_mtime_ns, str(path)))
             except (OSError, ValueError):
                 continue
-    return None
+    return max(candidates)[-1] if candidates else None
 
 
 def clean_checkpoints(save_dir: str):

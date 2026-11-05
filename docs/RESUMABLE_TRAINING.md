@@ -31,6 +31,10 @@ It is flushed using its actual count as the loss divisor. DDP `no_sync()` enclos
 both forward and backward on earlier microbatches; the last microbatch synchronizes.
 The saved cursor always points after a completed optimizer attempt, with zero
 pending gradients. Epoch-boundary cursors normalize to the next epoch, batch zero.
+The trainer tracks the last successfully saved boundary and avoids writing it again
+at session end after periodic/best saving. Unsaved attempts, skipped updates, cursor
+changes and best-loss changes still require a save; failed writes never mark a
+boundary persisted. Signal stops use the same rule.
 Seto's fixed complex RoPE buffer is reconstructed from configuration; DDP buffer
 broadcast is disabled because Gloo does not support broadcasting that dtype.
 
@@ -87,7 +91,13 @@ POSIX atomic rename is the supported deployment target; remote filesystems must
 provide equivalent semantics. Failed writes remove their temporary file in
 `finally` and leave published archives unchanged. A hard kill can leave hidden
 `.tmp` files, which auto-resume ignores. Auto-discovery checks ZIP integrity instead
-of trusting a filename/mtime; if no valid checkpoint exists but checkpoint artifacts
+of trusting a filename/mtime. Selection orders validated successful step, then
+optimizer attempts (including skips), then filesystem mtime only for tied progress.
+Older PR #5 archives without attempt counts in `meta.json` use `training.pt`;
+legacy checkpoints without an attempt count fall back to their successful step.
+ZIPs and legacy directories are compared in the same ordering. Copying an older
+Kaggle archive with a newer timestamp cannot displace higher-progress state.
+If no valid checkpoint exists but checkpoint artifacts
 are present, the CLI refuses to silently start a new traversal.
 
 Retention runs **after** successful publication and only rotates archives created
@@ -176,8 +186,8 @@ resume, gradient synchronization count and agreement with a single-process
 concatenated-batch reference, including incomplete accumulation windows.
 
 Verification in this workspace: Python 3.12.15, PyTorch 2.2.2, NumPy 1.26.4.
-The full collected suite passed 74 tests; two subsequently added cooldown/CRC
-regressions passed separately, bringing coverage to 76 tests (27 resumable-training
-cases). The final Gloo/reference test also passed after the runtime metadata update.
-Focused Ruff checks, syntax compilation, CLI help and diff whitespace checks pass.
+After the final checkpoint review fixes, the complete suite passed **86 tests**
+in one run, including all 37 resumable-training cases, cooldown/CRC regressions,
+and two-process Gloo/reference validation. Focused Ruff checks, syntax compilation
+and diff whitespace checks also pass.
 There were no GPU runs or external dataset downloads.

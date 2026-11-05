@@ -136,6 +136,7 @@ class SetoTrainer:
         self.tokens_updated = 0
         self.stop_requested = False
         self._at_step_boundary = True
+        self._last_saved_boundary = None
 
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
@@ -357,8 +358,10 @@ class SetoTrainer:
                 stop_training = bool(stop.item())
                 if epoch_done or stop_training:
                     break
-        # Always persist the latest boundary, including consumed/skipped windows.
-        self._save_checkpoint(last_loss)
+        # Attempts/cursor/scaler may advance even when global_step does not.
+        # Do not rewrite an identical boundary just saved by periodic/best saving.
+        if self._last_saved_boundary != self._checkpoint_boundary():
+            self._save_checkpoint(last_loss)
 
     @torch.no_grad()
     def evaluate(self) -> float:
@@ -378,6 +381,12 @@ class SetoTrainer:
             total_loss, n_batches = aggregate.tolist()
         self.model.train()
         return total_loss / max(1, n_batches)
+
+    def _checkpoint_boundary(self):
+        """Progress identity for saves within this trainer (including skipped updates)."""
+        return (self.global_step, self.optimizer_attempts, self.skipped_updates,
+                self.tokens_seen, self.tokens_updated, self.epoch, self.batch_cursor,
+                self.best_val_loss)
 
     def _save_checkpoint(self, loss: float, is_best: bool = False):
         """Collective operation: every rank contributes its own RNG state."""
@@ -413,3 +422,4 @@ class SetoTrainer:
             dist.broadcast_object_list(error, src=0)
         if error[0]:
             raise RuntimeError(f"Checkpoint save failed; previous checkpoint retained: {error[0]}")
+        self._last_saved_boundary = self._checkpoint_boundary()

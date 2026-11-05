@@ -588,3 +588,158 @@ def test_crc_corruption_falls_back_to_previous_valid_checkpoint(tmp_path):
     with pytest.raises(ValueError, match="CRC validation failed"):
         validate_checkpoint(newer)
     assert get_latest_checkpoint(str(tmp_path)) == old
+
+
+def progress_checkpoint(directory, step, attempts):
+    args = checkpoint_args(directory)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(args["optimizer"], lambda _: 1)
+    return Path(
+        save_checkpoint(
+            **(
+                args
+                | dict(
+                    step=step,
+                    scheduler=scheduler,
+                    scaler=SkipOnceScaler(),
+                    rng_state={},
+                    training_state={"optimizer_attempts": attempts},
+                )
+            )
+        )
+    )
+
+
+def test_latest_prefers_progress_over_copied_archive_mtime(tmp_path):
+    import os
+    import shutil
+
+    newer = progress_checkpoint(tmp_path, 5, 7)
+    older = progress_checkpoint(tmp_path / "incoming", 4, 20)
+    copied = tmp_path / "seto_step_99999999.zip"
+    shutil.copyfile(older, copied)
+    os.utime(newer, ns=(10, 10))
+    os.utime(copied, ns=(100, 100))
+    assert get_latest_checkpoint(str(tmp_path)) == str(newer)
+
+
+def test_latest_prefers_attempts_then_mtime_at_same_step(tmp_path):
+    import os
+    import shutil
+
+    first = progress_checkpoint(tmp_path / "first", 5, 5)
+    skipped = progress_checkpoint(tmp_path / "skipped", 5, 6)
+    first_copy = tmp_path / "seto_step_00000001.zip"
+    skipped_copy = tmp_path / "seto_step_00000002.zip"
+    shutil.copyfile(first, first_copy)
+    shutil.copyfile(skipped, skipped_copy)
+    os.utime(first_copy, ns=(100, 100))
+    os.utime(skipped_copy, ns=(10, 10))
+    assert get_latest_checkpoint(str(tmp_path)) == str(skipped_copy)
+    tie = tmp_path / "seto_step_00000003.zip"
+    shutil.copyfile(skipped, tie)
+    os.utime(tie, ns=(200, 200))
+    assert get_latest_checkpoint(str(tmp_path)) == str(tie)
+
+
+def test_latest_reads_older_v2_attempt_metadata(tmp_path):
+    import os
+
+    newer = progress_checkpoint(tmp_path / "source", 5, 8)
+    # Before this review, attempt counts lived only in training.pt.
+    old_format = tmp_path / "seto_step_00000001.zip"
+    with zipfile.ZipFile(newer) as source, zipfile.ZipFile(old_format, "w") as dest:
+        for name in source.namelist():
+            payload = source.read(name)
+            if name == "meta.json":
+                meta = json.loads(payload)
+                del meta["optimizer_attempts"]
+                payload = json.dumps(meta).encode()
+            dest.writestr(name, payload)
+    lesser = progress_checkpoint(tmp_path, 5, 7)
+    os.utime(old_format, ns=(10, 10))
+    os.utime(lesser, ns=(100, 100))
+    assert get_latest_checkpoint(str(tmp_path)) == str(old_format)
+
+
+def test_latest_compares_legacy_directory_progress(tmp_path):
+    import os
+
+    zip_path = Path(save_checkpoint(**checkpoint_args(tmp_path)))
+    folder = tmp_path / "step_00000000"
+    folder.mkdir()
+    (folder / "model.pt").write_bytes(b"legacy")
+    (folder / "optimizer.pt").write_bytes(b"legacy")
+    (folder / "meta.json").write_text(json.dumps({"step": 3, "config": {}}))
+    os.utime(folder, ns=(10, 10))
+    os.utime(zip_path, ns=(100, 100))
+    assert get_latest_checkpoint(str(tmp_path)) == str(folder)
+
+
+@pytest.mark.parametrize("reason", ["periodic", "signal", "best"])
+def test_final_save_avoids_identical_boundary(tmp_path, reason):
+    trainer = make_trainer(shards(tmp_path / "data"), tmp_path / "ckpt", save_every=1)
+    if reason == "signal":
+        # Simulate the CLI signal handler setting its flag during the last window.
+        trainer.model.register_forward_hook(lambda *args: setattr(trainer, "stop_requested", True))
+    elif reason == "best":
+        trainer.val_loader = []
+        trainer.config.eval_every = 1
+    from seto.checkpoint import save_checkpoint as actual_save
+
+    with patch("seto.trainer.save_checkpoint", wraps=actual_save) as save:
+        trainer.train(session_steps=1)
+    assert save.call_count == (2 if reason == "best" else 1)  # Main plus optional best archive.
+    assert trainer._last_saved_boundary == trainer._checkpoint_boundary()
+
+
+def test_final_save_persists_unscheduled_signal_stop(tmp_path):
+    trainer = make_trainer(shards(tmp_path / "data"), tmp_path / "ckpt")
+    trainer.model.register_forward_hook(lambda *args: setattr(trainer, "stop_requested", True))
+    from seto.checkpoint import save_checkpoint as actual_save
+
+    with patch("seto.trainer.save_checkpoint", wraps=actual_save) as save:
+        trainer.train()
+    assert save.call_count == 1
+    from seto.checkpoint import read_checkpoint_metadata
+
+    meta = read_checkpoint_metadata(get_latest_checkpoint(str(tmp_path / "ckpt")))
+    assert meta["step"] == meta["training"]["optimizer_attempts"] == 1
+    assert meta["training"]["batch_cursor"] == 3
+
+
+def test_final_save_persists_skip_after_saved_success(tmp_path):
+    trainer = make_trainer(
+        shards(tmp_path / "data"), tmp_path / "ckpt", use_fp16=True, save_every=1
+    )
+    trainer.scaler = SkipOnceScaler()
+    trainer.scaler.skip = False
+    original_step = trainer._optimizer_step
+
+    def step():
+        if trainer.optimizer_attempts == 1:
+            trainer.scaler.skip = True
+            trainer.stop_requested = True
+        return original_step()
+
+    from seto.checkpoint import read_checkpoint_metadata
+    from seto.checkpoint import save_checkpoint as actual_save
+
+    with (
+        patch.object(trainer, "_optimizer_step", side_effect=step),
+        patch("seto.trainer.save_checkpoint", wraps=actual_save) as save,
+    ):
+        trainer.train()
+    assert save.call_count == 2
+    meta = read_checkpoint_metadata(get_latest_checkpoint(str(tmp_path / "ckpt")))
+    assert meta["step"] == 1 and meta["optimizer_attempts"] == 2
+    assert meta["training"]["skipped_updates"] == 1
+    assert meta["training"]["epoch"] == 1 and meta["training"]["batch_cursor"] == 0
+    assert meta["scaler"]["value"] == 8
+
+
+def test_failed_save_does_not_mark_boundary_persisted(tmp_path):
+    trainer = make_trainer(shards(tmp_path / "data"), tmp_path / "ckpt")
+    with patch("seto.trainer.save_checkpoint", side_effect=OSError("disk full")):
+        with pytest.raises(RuntimeError, match="disk full"):
+            trainer._save_checkpoint(1)
+    assert trainer._last_saved_boundary is None
