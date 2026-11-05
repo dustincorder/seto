@@ -11,6 +11,14 @@ from .sft import SFTTrainer
 from .dpo import DPOTrainer
 from .data_filter import filter_text, detect_language, compute_quality_score
 
+from .pipeline import (
+    DocumentDeduplicator,
+    ShardPacker,
+    deterministic_document_split,
+    default_document_filter,
+    evaluate_tokenizer_efficiency,
+)
+
 __version__ = "0.3.1"
 __all__ = [
     "ModelConfig", "TrainConfig",
@@ -22,4 +30,6 @@ __all__ = [
     "pack_tokens_to_shards", "find_shards", "create_dataloader",
     "setup_distributed", "cleanup_distributed",
     "filter_text", "detect_language", "compute_quality_score",
+    "DocumentDeduplicator", "ShardPacker", "deterministic_document_split",
+    "default_document_filter", "evaluate_tokenizer_efficiency",
 ]
