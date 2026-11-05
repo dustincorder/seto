@@ -1,8 +1,12 @@
 import ast
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
+
+# Add repo root to sys.path so scripts can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def extract_function_from_file(file_path: Path, function_name: str):
@@ -103,6 +107,62 @@ class TestUploadHFTokenAndPrivacyHandling(unittest.TestCase):
         )
         self.assertIn("--private", result.stdout)
         self.assertIn("--public", result.stdout)
+
+    def test_verify_repo_visibility_new_private_repo(self):
+        from unittest.mock import MagicMock
+        from scripts.upload_hf import verify_repo_visibility
+
+        mock_api = MagicMock()
+        mock_info = MagicMock()
+        mock_info.private = True
+        mock_api.repo_info.return_value = mock_info
+
+        # Requested private, actual repo is private -> succeeds and returns True
+        is_private = verify_repo_visibility(mock_api, "user/new-private-repo", requested_private=True)
+        self.assertTrue(is_private)
+        mock_api.repo_info.assert_called_once_with(repo_id="user/new-private-repo", repo_type="model")
+
+    def test_verify_repo_visibility_existing_private_repo(self):
+        from unittest.mock import MagicMock
+        from scripts.upload_hf import verify_repo_visibility
+
+        mock_api = MagicMock()
+        mock_info = MagicMock()
+        mock_info.private = True
+        mock_api.repo_info.return_value = mock_info
+
+        # Existing private repo with requested private -> succeeds
+        is_private = verify_repo_visibility(mock_api, "user/existing-private-repo", requested_private=True)
+        self.assertTrue(is_private)
+
+    def test_verify_repo_visibility_existing_public_repo_refuses_private_upload(self):
+        from unittest.mock import MagicMock
+        from scripts.upload_hf import verify_repo_visibility
+
+        mock_api = MagicMock()
+        mock_info = MagicMock()
+        mock_info.private = False  # Existing repo is public on Hub
+        mock_api.repo_info.return_value = mock_info
+
+        # Requested private, but existing repo is public -> must refuse upload before sending weights
+        with self.assertRaises(PermissionError) as ctx:
+            verify_repo_visibility(mock_api, "user/existing-public-repo", requested_private=True)
+
+        self.assertIn("is PUBLIC, but private mode was requested", str(ctx.exception))
+        self.assertIn("--public", str(ctx.exception))
+
+    def test_verify_repo_visibility_explicit_public_mode(self):
+        from unittest.mock import MagicMock
+        from scripts.upload_hf import verify_repo_visibility
+
+        mock_api = MagicMock()
+        mock_info = MagicMock()
+        mock_info.private = False
+        mock_api.repo_info.return_value = mock_info
+
+        # Explicit public upload (requested_private=False) to public repo -> succeeds and returns False
+        is_private = verify_repo_visibility(mock_api, "user/public-repo", requested_private=False)
+        self.assertFalse(is_private)
 
 
 if __name__ == "__main__":
