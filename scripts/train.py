@@ -5,9 +5,12 @@ import argparse
 import copy
 import json
 import os
+import random
 import shutil
 import sys
 from pathlib import Path
+
+import numpy as np
 
 if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -18,15 +21,26 @@ import torch.distributed as dist
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from seto import (
-    SetoLM, SetoTokenizer, ModelConfig, TrainConfig,
-    MODEL_TINY, MODEL_SMALL, MODEL_BASE,
-    STAGE_PRETRAIN, STAGE_COOLDOWN, STAGE_SFT, STAGE_DPO,
-    SetoTrainer, SFTTrainer, DPOTrainer,
-    ShardDataset, SFTDataset, DPODataset,
+    MODEL_BASE,
+    MODEL_SMALL,
+    MODEL_TINY,
+    STAGE_COOLDOWN,
+    STAGE_DPO,
+    STAGE_PRETRAIN,
+    STAGE_SFT,
+    DPODataset,
+    DPOTrainer,
+    ModelConfig,
+    SetoLM,
+    SetoTokenizer,
+    SetoTrainer,
+    SFTDataset,
+    SFTTrainer,
+    ShardDataset,
     get_latest_checkpoint,
 )
-from seto.trainer import setup_distributed, cleanup_distributed
 from seto.checkpoint import zip_checkpoint
+from seto.trainer import cleanup_distributed, setup_distributed
 
 
 def parse_args():
@@ -49,6 +63,12 @@ def parse_args():
     p.add_argument("--min-lr", type=float, default=None)
     p.add_argument("--warmup-steps", type=int, default=None)
     p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument("--session-steps", type=int, default=None,
+                   help="Pretrain/cooldown: stop this session after N successful updates (keep schedule horizon)")
+    p.add_argument("--skip-export", action="store_true",
+                   help="Keep resumable checkpoints only; avoid duplicate final model export disk usage")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--num-workers", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
     p.add_argument("--log-every", type=int, default=None)
     p.add_argument("--epochs", type=int, default=None, help="Stop training after N epochs")
@@ -98,12 +118,18 @@ def main():
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, line_buffering=True)
 
+    trainer = None
+
     def _sigterm_handler(signum, frame):
-        print(f"[train.py] Received signal {signum}, initiating graceful save & export...", flush=True)
-        raise KeyboardInterrupt("Received termination signal")
+        if isinstance(trainer, SetoTrainer):
+            trainer.stop_requested = True
+            print(f"[train.py] Signal {signum}: stopping at the next completed optimizer boundary", flush=True)
+        else:
+            raise KeyboardInterrupt("Received termination signal")
 
     try:
         signal.signal(signal.SIGTERM, _sigterm_handler)
+        signal.signal(signal.SIGINT, _sigterm_handler)
     except Exception:
         pass
 
@@ -137,7 +163,12 @@ def main():
     setup_distributed(args.local_rank)
     is_main = args.local_rank in [-1, 0]
 
-    # Clean old checkpoints — only rank 0, then barrier
+    if args.clean and args.stage in ("pretrain", "cooldown"):
+        raise ValueError("--clean is disabled for resumable stages; preserve existing checkpoints")
+    if args.session_steps is not None and args.stage not in ("pretrain", "cooldown"):
+        raise ValueError("--session-steps currently supports pretrain/cooldown only")
+
+    # Legacy SFT/DPO explicit cleanup remains available.
     if args.clean:
         from seto.checkpoint import clean_checkpoints
         ckpt_dir = os.path.join(args.output_dir, f"checkpoints_{args.stage}")
@@ -171,7 +202,10 @@ def main():
             "sft": STAGE_SFT,
             "dpo": STAGE_DPO,
         }
-        train_config = stage_map[args.stage]
+        train_config = copy.deepcopy(stage_map[args.stage])
+        train_config.seed = args.seed
+        if args.num_workers is not None:
+            train_config.num_workers = args.num_workers
 
         # Set DDP-aware config values
         if dist.is_initialized():
@@ -221,6 +255,9 @@ def main():
             print(f"Seto | Stage: {args.stage} | Model: {args.model_config} | Params: ~{model_config.num_params():,}")
             print(f"[train.py] Gradient checkpointing: {model_config.use_gradient_checkpointing}", flush=True)
 
+        random.seed(args.seed + (dist.get_rank() if dist.is_initialized() else 0))
+        np.random.seed(args.seed + (dist.get_rank() if dist.is_initialized() else 0))
+        torch.manual_seed(args.seed + (dist.get_rank() if dist.is_initialized() else 0))
         tokenizer = SetoTokenizer.from_pretrained(args.tokenizer)
         model = SetoLM(model_config)
 
@@ -270,17 +307,18 @@ def main():
                 latest = get_latest_checkpoint(train_config.checkpoint_dir)
                 if latest:
                     trainer.resume(latest)
+                elif any(Path(train_config.checkpoint_dir).glob("*seto_step*")) or any(
+                    Path(train_config.checkpoint_dir).glob(".seto_step*")
+                ):
+                    raise ValueError("Checkpoint artifacts exist but none validate; refusing a silent restart. "
+                                     "Select a valid --resume checkpoint or use a new output directory")
 
             # Print device info from ALL ranks
             local_rank = args.local_rank
             dev = f"cuda:{local_rank}" if local_rank >= 0 else ("cuda:0" if torch.cuda.is_available() else "cpu")
             print(f"[rank {local_rank}] device={dev}", flush=True)
 
-            try:
-                trainer.train()
-            except KeyboardInterrupt:
-                if is_main:
-                    print("[train.py] Pretraining interrupted by user/signal. Proceeding to save checkpoint/export...", flush=True)
+            trainer.train(session_steps=args.session_steps)
 
         elif args.stage == "sft":
             dataset = SFTDataset(args.data_dir, seq_len=model_config.max_seq_len, tokenizer=tokenizer,
@@ -333,7 +371,7 @@ def main():
                 if is_main:
                     print("[train.py] DPO interrupted by user/signal. Proceeding to save checkpoint/export...", flush=True)
 
-        if is_main:
+        if is_main and not args.skip_export:
             final_dir = os.path.join(args.output_dir, f"final_{args.stage}")
             os.makedirs(final_dir, exist_ok=True)
             state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
