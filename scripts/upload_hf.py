@@ -48,12 +48,34 @@ def find_checkpoint(model_arg: str | None = None) -> Path:
     raise FileNotFoundError("Could not find final_sft.zip in /kaggle/working, /kaggle/input, or local dir")
 
 
+def verify_repo_visibility(api, repo_id: str, requested_private: bool, repo_type: str = "model") -> bool:
+    """Verify repo visibility before uploading.
+
+    Raises PermissionError if private mode was requested but the existing
+    repository is public. Does NOT automatically change the repository's visibility.
+    """
+    info = api.repo_info(repo_id=repo_id, repo_type=repo_type)
+    actual_private = getattr(info, "private", False)
+
+    if requested_private and not actual_private:
+        raise PermissionError(
+            f"Repository '{repo_id}' is PUBLIC, but private mode was requested!\n"
+            "Refusing to upload to avoid leaking private weights.\n"
+            "To publish publicly, explicitly pass --public.\n"
+            "To make the repository private, change its visibility settings on huggingface.co."
+        )
+    return actual_private
+
+
 def main():
     parser = argparse.ArgumentParser(description="Upload Seto model to Hugging Face Hub")
     parser.add_argument("--repo-id", required=True, help="HF repo ID, e.g., 'your-username/seto-small-sft'")
     parser.add_argument("--token", default=None, help="HF write token (or set HF_TOKEN env var)")
     parser.add_argument("--model", default=None, help="Path to final_sft.zip (auto-detected if omitted)")
-    parser.add_argument("--private", action="store_true", help="Make HF repository private")
+    parser.add_argument("--private", action="store_true", default=True,
+                        help="Make HF repository private (default: True for security)")
+    parser.add_argument("--public", dest="private", action="store_false",
+                        help="Explicitly make HF repository public")
     parser.add_argument("--include-unpacked", action="store_true", default=True,
                         help="Also upload unpacked model.pt and config.json")
     args = parser.parse_args()
@@ -61,7 +83,7 @@ def main():
     token = args.token or os.environ.get("HF_TOKEN")
     if not token:
         raise ValueError(
-            "Missing Hugging Face token! Pass --token hf_... or set export HF_TOKEN=hf_..."
+            "Missing Hugging Face token! Set the HF_TOKEN environment variable (recommended) or pass --token."
         )
 
     try:
@@ -78,6 +100,11 @@ def main():
 
     print(f"🚀 Создаем/проверяем репозиторий: {args.repo_id} (private={args.private})...")
     api.create_repo(repo_id=args.repo_id, repo_type="model", exist_ok=True, private=args.private)
+
+    # Verify actual visibility of the repository before uploading any data
+    actual_private = verify_repo_visibility(api, args.repo_id, requested_private=args.private, repo_type="model")
+    visibility_str = "private" if actual_private else "public"
+    print(f"🔒 Подтверждена видимость репозитория: {visibility_str}")
 
     # 1. Upload archive itself
     print(f"📤 Загрузка {archive_path.name} в {args.repo_id}...")
